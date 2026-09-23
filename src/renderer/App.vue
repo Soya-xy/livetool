@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onErrorCaptured, onMounted, ref, watch, watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   Bell, ChatDotRound, CircleClose, Connection, Grid, Key, MagicStick, Minus, Monitor, Setting, SwitchButton, VideoCamera,
@@ -20,9 +20,16 @@ const safeCode = ref('')
 const authStatus = ref<LicenseAuthStatus>({ loggedIn: false, mode: 'remote', platform: 'simulator', features: [] })
 const authLoading = ref(false)
 const safeCodeLoading = ref(false)
+const pageError = ref('')
+const fatalInfos = new Set(['render function', 'component update', 'setup function'])
 let authPolling: ReturnType<typeof setInterval> | undefined
 
 const overlayPage = computed(() => route.path.startsWith('/overlay-'))
+// Overlay 窗口本体是透明窗口：html/body 都不能画底色，否则透明会被底色盖住（:root 上就有 --paper 底色）。
+watchEffect(() => {
+  document.documentElement.classList.toggle('overlay-body', overlayPage.value)
+  document.body.classList.toggle('overlay-body', overlayPage.value)
+})
 const currentTitle = computed(() => ({ '/control': '控制中心', '/diary': '弹幕日记', '/extensions': '扩展功能', '/settings': '通用设置', '/license-admin': '卡密管理' }[route.path] ?? 'Overlay'))
 const navItems = [
   { path: '/control', label: '控制中心', icon: Grid },
@@ -38,6 +45,16 @@ onMounted(() => {
 })
 onBeforeUnmount(() => { if (authPolling) clearInterval(authPolling) })
 
+// 页面渲染崩溃时兜底：只拦渲染/挂载阶段的错误，动作类报错继续交给全局 errorHandler。
+onErrorCaptured((error, _instance, info) => {
+  if (!fatalInfos.has(info)) return
+  pageError.value = error instanceof Error ? error.message : String(error)
+  return false
+})
+watch(() => route.fullPath, () => { pageError.value = '' })
+
+function retryPage(): void { pageError.value = '' }
+function recoverPage(path = '/control'): void { pageError.value = ''; void router.push(path) }
 function navigate(path: string): void { void router.push(path) }
 async function refreshAuthStatus(loadSettings = false): Promise<void> {
   try {
@@ -126,7 +143,15 @@ async function unbindDevice(): Promise<void> {
         </div>
       </header>
       <div class="notice-strip"><el-icon><Monitor /></el-icon><span>7.6.3 新增手势拍蚊子、手机玩法铁链/视频特效/垃圾掉落与虚拟摄像头。当前为本地模拟闭环，可随时替换连接器。</span><button @click="openAuth">授权 / 模式</button></div>
-      <section class="page-area"><router-view /></section>
+      <section class="page-area">
+        <div v-if="pageError" class="page-fallback">
+          <div class="page-fallback-mark">!</div>
+          <h3>页面加载失败</h3>
+          <p>{{ pageError }}</p>
+          <div class="page-fallback-actions"><el-button type="primary" @click="retryPage">重试</el-button><el-button @click="recoverPage()">返回控制中心</el-button></div>
+        </div>
+        <router-view v-else />
+      </section>
       <footer class="status-footer">
         <div class="status-summary"><span class="status-dot" :class="store.status.state" /><span>{{ store.status.state === 'connected' ? `已连接 · ${store.status.platform}` : '未连接直播间' }}</span><span class="footer-separator">·</span><span>队列 {{ store.status.dropped ? `丢弃 ${store.status.dropped}` : '正常' }}</span></div>
         <div class="footer-actions"><span class="safe-label">{{ authStatus.mode === 'local' && authStatus.loggedIn ? '本地开发模式' : authStatus.loggedIn ? '卡密已授权' : '未授权' }}</span><button @click="openAuth">登录 / 切换模式</button></div>

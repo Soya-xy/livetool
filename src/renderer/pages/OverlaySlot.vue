@@ -11,6 +11,8 @@ interface AccelerationJob { total: number; completed: number; startedAt: number 
 const widgets = ref<ActiveWidget[]>([])
 const slotRun = ref<SlotRun | null>(null)
 const speechNotice = ref('')
+// 底板模式：true = 透明（窗口底色被抠像抠掉，只剩活动组件），false = 深色底板。切换不影响组件本身。
+const backgroundTransparent = ref(true)
 const fallbackFruit = ['🍺', '💖', '🎁', '🍀', '⭐', '🎈', '🌈', '🍉', '🧧', '💎', '🎯', '🪙', '🎉', '🏆']
 const activeTimers = new Map<string, ReturnType<typeof setInterval>>()
 const hideTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -25,8 +27,13 @@ onMounted(() => {
     if (message.type === 'slot-start') startSlot(message.payload as { theme?: string; pool?: string[]; weights?: number[]; images?: string[]; durationMs?: number; audioPath?: string })
     if (message.type === 'component-widget') showWidget(message.payload as OverlayWidgetPayload)
     if (message.type === 'component-remove') removeWidget((message.payload as { featureId: ActiveWidget['featureId'] }).featureId)
+    if (message.type === 'background-mode') backgroundTransparent.value = (message.payload as { transparent?: boolean }).transparent !== false
   })
   window.addEventListener('keydown', handleUnlockKey)
+  // 主进程推送可能早于订阅，这里再主动拉一次当前底板状态。
+  void api.overlay.status()
+    .then((list) => { backgroundTransparent.value = list.find((item) => item.type === 'slot')?.backgroundTransparent !== false })
+    .catch(() => undefined)
 })
 
 onBeforeUnmount(() => {
@@ -369,7 +376,7 @@ function wheelGradient(poolText: string, weightText: string): string {
 </script>
 
 <template>
-  <div class="slot-overlay" :class="slotRun?.theme ?? 'default'">
+  <div class="slot-overlay" :class="[slotRun?.theme ?? 'default', { 'panel-background': !backgroundTransparent }]">
     <header class="component-status-bar"><b>yapp · 组件窗口</b><span>{{ widgets.length }} 个活动组件</span><span>ESC 可紧急解除窗口锁定</span></header>
     <div v-if="speechNotice" class="speech-notice" aria-live="polite">{{ speechNotice }}</div>
     <section v-if="slotRun" class="slot-game">

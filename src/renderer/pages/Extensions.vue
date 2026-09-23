@@ -182,7 +182,7 @@ async function openFeatureWindow(type: OverlayType, config: FeatureConfig): Prom
       width: valueOf(config, 'width', 960),
       height: valueOf(config, 'height', 540),
       alwaysOnTop: valueOf(config, 'alwaysOnTop', true),
-      background: '#000000',
+      background: '#00ff00',
     })
   }
   await api.overlay.open(type)
@@ -194,6 +194,11 @@ async function setOverlayMode(type: OverlayType, mode: OverlayWindowMode): Promi
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '窗口模式切换失败')
   }
+}
+
+async function toggleSlotBackground(): Promise<void> {
+  const status = await api.overlay.toggleOpacity('slot')
+  ElMessage.info(status.backgroundTransparent ? '组件窗口底板已换成抠像绿：在 OBS / 直播伴侣里对采集源加「色键」即可只留活动组件' : '组件窗口已显示深色底板')
 }
 
 async function closeOverlay(type: OverlayType): Promise<void> {
@@ -247,6 +252,7 @@ async function runFeature(feature: FeatureDefinition): Promise<void> {
         <div class="overlay-window-label"><b>yapp</b><span>组件窗口</span><small>{{ statusOf('slot')?.width }} × {{ statusOf('slot')?.height }}</small></div>
         <el-button type="primary" size="small" @click="setOverlayMode('slot', 'landscape-16-9')">横屏</el-button>
         <el-button size="small" @click="setOverlayMode('slot', 'portrait-9-16')">竖屏</el-button>
+        <el-button size="small" @click="toggleSlotBackground">{{ statusOf('slot')?.backgroundTransparent ? '底板：抠像绿' : '底板：深色' }}</el-button>
         <el-button type="danger" size="small" @click="setOverlayMode('slot', 'fullscreen')">全屏</el-button>
         <el-button link size="small" @click="closeOverlay('slot')">关闭</el-button>
       </div>

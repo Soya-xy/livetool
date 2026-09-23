@@ -1,7 +1,30 @@
 import type { AppSettings, ConnectorStatus, DanmakuFilter, DanmakuRecord, ElectronApi, LiveEvent, LogEntry, OverlaySettings, OverlayType, OverlayWindowMode, OverlayWindowStatus, Platform, Rule } from '@shared/types'
 import { createDefaultFeatureSettings } from '@shared/features'
 
-export const api: ElectronApi = window.api ?? createBrowserApi()
+export const api: ElectronApi = window.api ? withPlainArgs(window.api) : createBrowserApi()
+
+// 渲染进程会把 Vue 响应式代理（reactive/ref 里的对象）直接当参数传给 IPC，而 contextBridge 与 IPC
+// 的结构化克隆都不支持 Proxy，会抛 “An object could not be cloned.”。跨进程前统一还原成纯数据。
+// 注意：不能直接用 Proxy 包住桥接对象（它的属性是只读且不可配置的，get 陷阱会违反代理不变量）。
+function withPlainArgs<T extends object>(source: T): T {
+  const wrapped: Record<string, unknown> = {}
+  for (const key of Object.getOwnPropertyNames(source)) {
+    const value: unknown = (source as Record<string, unknown>)[key]
+    if (typeof value === 'function') wrapped[key] = (...args: unknown[]) => (value as (...rest: unknown[]) => unknown)(...args.map(toPlain))
+    else if (value && typeof value === 'object') wrapped[key] = withPlainArgs(value as object)
+    else wrapped[key] = value
+  }
+  return wrapped as T
+}
+
+function toPlain(value: unknown): unknown {
+  if (value === null || typeof value !== 'object') return value
+  if (value instanceof Date) return new Date(value.getTime())
+  if (Array.isArray(value)) return value.map(toPlain)
+  const plain: Record<string, unknown> = {}
+  for (const key of Object.keys(value)) plain[key] = toPlain((value as Record<string, unknown>)[key])
+  return plain
+}
 
 function createBrowserApi(): ElectronApi {
   const listeners = new EventTarget()
@@ -46,8 +69,8 @@ function createBrowserApi(): ElectronApi {
       close: async (type) => { const status = state.overlayStatus.find((item) => item.type === type)!; status.visible = false; emit('overlay:status', status); return state.overlayStatus },
       status: async () => state.overlayStatus,
       setMode: async (type, mode) => { const status = state.overlayStatus.find((item) => item.type === type)!; const size = overlaySize(type, mode, status); status.mode = mode; status.visible = true; status.width = size.width; status.height = size.height; emit('overlay:status', status); return status },
-      toggleOpacity: async (type) => { const status = state.overlayStatus.find((item) => item.type === type)!; status.opacity = status.opacity <= 0.3 ? 1 : 0.25; emit('overlay:status', status); return status },
-      updateSettings: async (type, patch) => { const key = type === 'green' ? 'overlayGreen' : 'overlaySlot'; state.settings[key] = { ...state.settings[key], ...patch }; const status = state.overlayStatus.find((item) => item.type === type)!; status.width = state.settings[key].width; status.height = state.settings[key].height; status.opacity = state.settings[key].opacity; emit('overlay:status', status); return state.settings[key] },
+      toggleOpacity: async (type) => { const status = state.overlayStatus.find((item) => item.type === type)!; if (type === 'green') status.opacity = status.opacity <= 0.3 ? 1 : 0.25; else { status.backgroundTransparent = !status.backgroundTransparent; state.settings.overlaySlot.backgroundTransparent = status.backgroundTransparent }; emit('overlay:status', status); return status },
+      updateSettings: async (type, patch) => { const key = type === 'green' ? 'overlayGreen' : 'overlaySlot'; state.settings[key] = { ...state.settings[key], ...patch }; const status = state.overlayStatus.find((item) => item.type === type)!; status.width = state.settings[key].width; status.height = state.settings[key].height; status.opacity = state.settings[key].opacity; status.backgroundTransparent = state.settings[key].backgroundTransparent; emit('overlay:status', status); return state.settings[key] },
       playVideo: async () => undefined, drop: async () => undefined, slot: async () => undefined, widget: async () => undefined, removeWidget: async () => undefined,
       onMessage: (callback) => sub('overlay:message', callback),
       onStatus: (callback) => sub('overlay:status', callback),
@@ -105,12 +128,12 @@ function toCsv(records: DanmakuRecord[]): string {
   return [header, ...rows].map((row) => row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(',')).join('\n')
 }
 
-function defaultSettings(): AppSettings { return { version: '7.6.3-replica', devMode: true, logLevel: 'info', retentionDays: 30, retentionMaxRows: 200000, storeRaw: false, hotkey: 'Ctrl + Shift + 1-9', audioVolume: 0.8, assetsRoot: 'resources', overlayGreen: { visible: false, alwaysOnTop: true, opacity: 1, width: 960, height: 540, laneCount: 3, background: '#00ff00' }, overlaySlot: { visible: false, alwaysOnTop: true, opacity: 1, width: 960, height: 540, laneCount: 1, background: '#000000' }, platform: 'simulator', roomId: 'demo-room', authServerUrl: 'http://127.0.0.1:8787', obsUrl: 'ws://127.0.0.1:4455', obsPassword: '', autoStart: false, features: createDefaultFeatureSettings() } }
+function defaultSettings(): AppSettings { return { version: '7.6.3-replica', devMode: true, logLevel: 'info', retentionDays: 30, retentionMaxRows: 200000, storeRaw: false, hotkey: 'Ctrl + Shift + 1-9', audioVolume: 0.8, assetsRoot: 'resources', overlayGreen: { visible: false, alwaysOnTop: true, opacity: 1, backgroundTransparent: false, width: 960, height: 540, laneCount: 3, background: '#00ff00' }, overlaySlot: { visible: false, alwaysOnTop: true, opacity: 1, backgroundTransparent: true, width: 960, height: 540, laneCount: 1, background: '#000000' }, platform: 'simulator', roomId: 'demo-room', authServerUrl: 'http://127.0.0.1:8787', obsUrl: 'ws://127.0.0.1:4455', obsPassword: '', autoStart: false, features: createDefaultFeatureSettings() } }
 
 function createBrowserOverlayStatus(): OverlayWindowStatus[] {
   return [
-    { type: 'green', role: 'ylm', title: '阿比整蛊 - 绿幕窗口 【禁止最小化】（按Tab键可以管理视频列表）', visible: false, width: 960, height: 540, mode: 'green', fullscreen: false, opacity: 1 },
-    { type: 'slot', role: 'yapp', title: '阿比整蛊 - 组件窗口 【禁止最小化】 快捷键切换透明度 Ctrl + F1', visible: false, width: 960, height: 540, mode: 'landscape-16-9', fullscreen: false, opacity: 1 },
+    { type: 'green', role: 'ylm', title: '阿比整蛊 - 绿幕窗口 【禁止最小化】（按Tab键可以管理视频列表）', visible: false, width: 960, height: 540, mode: 'green', fullscreen: false, opacity: 1, backgroundTransparent: false },
+    { type: 'slot', role: 'yapp', title: '阿比整蛊 - 组件窗口 【禁止最小化】 快捷键切换透明度 Ctrl + F1', visible: false, width: 960, height: 540, mode: 'landscape-16-9', fullscreen: false, opacity: 1, backgroundTransparent: true },
   ]
 }
 

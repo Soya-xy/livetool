@@ -71,8 +71,8 @@ const defaultSettings: AppSettings = {
   hotkey: 'Ctrl + Shift + 1-9',
   audioVolume: 0.8,
   assetsRoot: '',
-  overlayGreen: { visible: false, alwaysOnTop: true, opacity: 1, width: 960, height: 540, laneCount: 3, background: '#00ff00' },
-  overlaySlot: { visible: false, alwaysOnTop: true, opacity: 1, width: 960, height: 540, laneCount: 1, background: '#000000' },
+  overlayGreen: { visible: false, alwaysOnTop: true, opacity: 1, backgroundTransparent: false, width: 960, height: 540, laneCount: 3, background: '#00ff00' },
+  overlaySlot: { visible: false, alwaysOnTop: true, opacity: 1, backgroundTransparent: true, width: 960, height: 540, laneCount: 1, background: '#000000' },
   platform: 'simulator',
   roomId: 'demo-room',
   authServerUrl: 'http://127.0.0.1:8787',
@@ -220,7 +220,13 @@ function registerIpc(): void {
   handle('overlay:close', async (_event, type: OverlayType) => { await windows.close(type); return windows.getStatus() })
   handle('overlay:status', () => windows.getStatus())
   handle('overlay:setMode', (_event, type: OverlayType, mode: OverlayWindowMode) => { requireEntitlement(type === 'green' ? 'overlay' : 'slot'); return windows.setMode(type, mode) })
-  handle('overlay:toggleOpacity', (_event, type: OverlayType) => { requireEntitlement(type === 'green' ? 'overlay' : 'slot'); return windows.toggleOpacity(type) })
+  handle('overlay:toggleOpacity', async (_event, type: OverlayType) => {
+    requireEntitlement(type === 'green' ? 'overlay' : 'slot')
+    const status = await windows.toggleOpacity(type)
+    // 组件窗口的底板开关要跟着设置落盘，重启后保持；绿幕窗口沿用原有行为。
+    if (type === 'slot') { settings.overlaySlot = windows.getSettings('slot'); saveSettings() }
+    return status
+  })
   handle('overlay:updateSettings', (_event, type: 'green' | 'slot', patch: Partial<OverlaySettings>) => {
     requireEntitlement(type === 'green' ? 'overlay' : 'slot')
     const updated = windows.updateSettings(type, patch)

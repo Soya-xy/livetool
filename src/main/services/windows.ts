@@ -20,8 +20,8 @@ export class WindowManager {
   private readonly slotWidgets = new Map<FeatureId, OverlayWidgetPayload>()
   private readonly modes: Record<OverlayType, OverlayWindowMode> = { green: 'green', slot: 'landscape-16-9' }
   private readonly settings: Record<OverlayType, OverlaySettings> = {
-    green: { visible: false, alwaysOnTop: true, opacity: 1, width: 960, height: 540, laneCount: 3, background: '#00ff00' },
-    slot: { visible: false, alwaysOnTop: true, opacity: 1, width: 960, height: 540, laneCount: 1, background: '#000000' },
+    green: { visible: false, alwaysOnTop: true, opacity: 1, backgroundTransparent: false, width: 960, height: 540, laneCount: 3, background: '#00ff00' },
+    slot: { visible: false, alwaysOnTop: true, opacity: 1, backgroundTransparent: true, width: 960, height: 540, laneCount: 1, background: '#000000' },
   }
 
   constructor(private readonly preloadPath: string) {}
@@ -98,9 +98,16 @@ export class WindowManager {
   async toggleOpacity(type: OverlayType): Promise<OverlayWindowStatus> {
     const window = this.ensureOverlay(type)
     await this.waitReady(window)
-    const opacity = this.settings[type].opacity <= 0.3 ? 1 : 0.25
-    this.settings[type].opacity = opacity
-    if (!window.isDestroyed()) window.setOpacity(opacity)
+    if (type === 'green') {
+      const opacity = this.settings.green.opacity <= 0.3 ? 1 : 0.25
+      this.settings.green.opacity = opacity
+      if (!window.isDestroyed()) window.setOpacity(clampOpacity(opacity))
+    } else {
+      // 组件窗口只切底板：纯黑底板（采集端色键抠掉后只剩活动组件）↔ 深色底板，不做整窗淡出。
+      this.settings.slot.backgroundTransparent = !this.slotBackgroundTransparent()
+      if (!window.isDestroyed()) window.setBackgroundColor(this.nativeBackground('slot', this.settings.slot.background))
+      this.notifySlotBackground(window)
+    }
     this.emitStatus(type)
     return this.statusFor(type)
   }
@@ -173,6 +180,8 @@ export class WindowManager {
       y: Math.max(0, Math.round((display.height - value.height) / 2)),
       title: this.titleFor(type),
       frame: true,
+      // 两个 Overlay 都是普通窗口（系统原生标题栏，可拖动/可拉边）；组件窗口的“透明”
+      // 由 applySlotColorKey 在运行时给窗口加分层 + 抠像黑实现，和原版 yapp 完全一致。
       transparent: false,
       backgroundColor: this.nativeBackground(type, value.background),
       resizable: true,
@@ -181,7 +190,7 @@ export class WindowManager {
       alwaysOnTop: value.alwaysOnTop,
       skipTaskbar: false,
       show: false,
-      opacity: value.opacity,
+      opacity: type === 'slot' ? 1 : clampOpacity(value.opacity),
       autoHideMenuBar: true,
       webPreferences: this.webPreferences(),
     })
@@ -244,11 +253,24 @@ export class WindowManager {
   private applySettings(type: OverlayType, window: BrowserWindow): void {
     const value = this.settings[type]
     window.setAlwaysOnTop(value.alwaysOnTop)
-    window.setOpacity(Math.min(1, Math.max(0.1, value.opacity)))
+    // 组件窗口的“透明度”是底板开关，不是窗口整体淡出：窗口本身保持不透明，
+    // 否则活动组件会跟着一起变透明。
+    window.setOpacity(type === 'slot' ? 1 : clampOpacity(value.opacity))
     if (!window.isFullScreen()) window.setSize(Math.max(320, value.width), Math.max(240, value.height))
     window.setBackgroundColor(this.nativeBackground(type, value.background))
+    if (type === 'slot') this.notifySlotBackground(window)
     if (value.visible) window.showInactive()
     else window.hide()
+  }
+
+  /** 组件窗口底板是否完全透明（默认透明；老配置缺该字段时按透明处理）。 */
+  private slotBackgroundTransparent(): boolean {
+    return this.settings.slot.backgroundTransparent !== false
+  }
+
+  private notifySlotBackground(window: BrowserWindow): void {
+    if (window.isDestroyed()) return
+    window.webContents.send('overlay:message', { target: 'slot', type: 'background-mode', payload: { transparent: this.slotBackgroundTransparent() } })
   }
 
   private sizeFor(type: OverlayType, mode: OverlayWindowMode): { width: number; height: number } {
@@ -271,6 +293,7 @@ export class WindowManager {
       mode: this.modes[type],
       fullscreen: Boolean(window && !window.isDestroyed() && window.isFullScreen()),
       opacity: this.settings[type].opacity,
+      backgroundTransparent: type === 'slot' ? this.slotBackgroundTransparent() : false,
     }
   }
 
@@ -287,7 +310,9 @@ export class WindowManager {
 
   private nativeBackground(type: OverlayType, color: string): string {
     if (type === 'green') return color === 'transparent' ? '#00ff00' : color
-    return color === 'transparent' ? '#000000' : color
+    // 组件窗口：透明底板模式下窗口底色取纯黑（和原版 yapp 一致），采集端加色键即可抠成透明；
+    // 深色底板模式用面板色。窗口本身是普通窗口，系统原生标题栏保留。
+    return this.slotBackgroundTransparent() ? '#000000' : '#080d18'
   }
 
   private send(target: OverlayType, type: string, payload: unknown): void {
@@ -306,4 +331,8 @@ export class WindowManager {
 function toMediaUrl(filePath: string): string {
   if (/^(file|https?):\/\//i.test(filePath)) return filePath
   return pathToFileURL(filePath).toString()
+}
+
+function clampOpacity(value: number): number {
+  return Math.min(1, Math.max(0.1, value))
 }

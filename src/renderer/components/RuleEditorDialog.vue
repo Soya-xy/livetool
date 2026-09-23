@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref, toRaw, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Delete, Plus, Sort } from '@element-plus/icons-vue'
 import type { Action, EventKind, KeyStep, MouseStep, Rule } from '@shared/types'
@@ -21,7 +21,8 @@ const eventKinds: Array<{ label: string; value: EventKind }> = [{ label: '礼物
 watch(() => props.modelValue, (visible) => { if (visible) loadDraft() })
 
 function loadDraft(): void {
-  draft.value = props.rule ? structuredClone(props.rule) : blankRule()
+  // props.rule / draft 都是 Vue 响应式代理，structuredClone 无法克隆 Proxy，先取原始对象。
+  draft.value = props.rule ? structuredClone(toRaw(props.rule)) : blankRule()
   keywordText.value = draft.value.trigger.keywords?.join(', ') ?? ''
   giftText.value = draft.value.trigger.giftNames?.join(', ') ?? ''
   userText.value = draft.value.trigger.users?.join(', ') ?? ''
@@ -72,7 +73,7 @@ async function save(): Promise<void> {
   const sources = draft.value.trigger.source?.filter(Boolean) ?? []
   draft.value.trigger.source = sources.length ? sources : undefined
   for (const action of draft.value.actions) parseJsonSteps(action)
-  await store.saveRule(structuredClone(draft.value))
+  await store.saveRule(structuredClone(toRaw(draft.value)))
   ElMessage.success('玩法已保存')
   emit('saved')
   close()

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, toRaw } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../services/api'
 import { useAppStore } from '../stores/app'
@@ -9,19 +9,30 @@ const store = useAppStore()
 const form = reactive<Partial<AppSettings>>({})
 const logs = ref(awaitLogs())
 const saved = ref(false)
+const ready = ref(false)
+const loadError = ref('')
 const obsState = ref('未连接')
 const obsPasswordInput = ref('')
 const virtualCameraActive = ref(false)
 const overlayStatus = computed(() => ({ green: form.overlayGreen?.visible ? '已打开' : '未打开', slot: form.overlaySlot?.visible ? '已打开' : '未打开' }))
 
-onMounted(async () => {
-  await store.init()
-  Object.assign(form, structuredClone(store.settings ?? {}))
-  logs.value = await api.diagnostics.logs(40)
-  const status = await api.obs.status()
-  obsState.value = status.message
-  virtualCameraActive.value = Boolean(status.virtualCameraActive)
-})
+onMounted(() => { void load() })
+async function load(): Promise<void> {
+  loadError.value = ''
+  ready.value = false
+  try {
+    await store.init()
+    // store.settings 是 Vue 响应式代理，structuredClone 无法克隆 Proxy，需要先取原始对象。
+    Object.assign(form, structuredClone(toRaw(store.settings ?? {})))
+    logs.value = await api.diagnostics.logs(40)
+    const status = await api.obs.status()
+    obsState.value = status.message
+    virtualCameraActive.value = Boolean(status.virtualCameraActive)
+    ready.value = true
+  } catch (error) {
+    loadError.value = error instanceof Error ? error.message : '设置读取失败'
+  }
+}
 function awaitLogs() { return [] as Awaited<ReturnType<typeof api.diagnostics.logs>> }
 async function save(): Promise<void> {
   const patch = { ...form }
@@ -58,8 +69,12 @@ async function importConfig(): Promise<void> { const result = await api.config.i
 
 <template>
   <div class="page-stack settings-page">
-    <div class="page-heading"><div><div class="section-kicker">SYSTEM / 04</div><h1>通用设置</h1><p>连接、窗口、数据保留和诊断信息都在这里。</p></div><el-button type="primary" size="large" :class="{ saved }" @click="save">{{ saved ? '已保存 ✓' : '保存设置' }}</el-button></div>
-    <div class="settings-grid">
+    <div class="page-heading"><div><div class="section-kicker">SYSTEM / 04</div><h1>通用设置</h1><p>连接、窗口、数据保留和诊断信息都在这里。</p></div><el-button type="primary" size="large" :class="{ saved }" :disabled="!ready" @click="save">{{ saved ? '已保存 ✓' : '保存设置' }}</el-button></div>
+    <el-alert v-if="loadError" class="settings-load-error" type="error" :closable="false" show-icon title="设置读取失败">
+      <template #default><span class="settings-load-error-body"><span>{{ loadError }}</span><el-button link type="primary" @click="load">重新加载</el-button></span></template>
+    </el-alert>
+    <div v-if="!ready && !loadError" class="settings-loading"><el-skeleton :rows="6" animated /></div>
+    <div v-if="ready" class="settings-grid">
       <section class="settings-card data-card">
         <div class="settings-title"><span class="settings-index">A</span><div><h2>平台连接</h2><p>当前版本默认使用本地模拟器；平台适配器保持独立。</p></div></div>
         <el-form label-position="top"><div class="form-grid"><el-form-item label="直播平台"><el-select v-model="form.platform"><el-option label="本地模拟器" value="simulator" /><el-option label="抖音（连接器占位）" value="douyin" /><el-option label="快手（连接器占位）" value="kuaishou" /><el-option label="视频号（连接器占位）" value="shipinhao" /><el-option label="B站（连接器占位）" value="bilibili" /><el-option label="TIKTOK（连接器占位）" value="tiktok" /><el-option label="小红书（连接器占位）" value="xiaohongshu" /></el-select></el-form-item><el-form-item label="直播间 ID"><el-input v-model="form.roomId" placeholder="demo-room" /></el-form-item></div>
@@ -70,7 +85,7 @@ async function importConfig(): Promise<void> { const result = await api.config.i
         <div class="settings-title"><span class="settings-index">B</span><div><h2>Overlay 窗口</h2><p>绿幕和组件窗口是独立窗口，可供 OBS 采集。</p></div></div>
         <div class="overlay-setting-row"><div><b>绿幕窗口</b><small>{{ overlayStatus.green }} · {{ form.overlayGreen?.width }} × {{ form.overlayGreen?.height }}</small></div><div class="row-controls"><el-switch :model-value="Boolean(form.overlayGreen?.visible)" @update:model-value="toggleOverlay('green')" /><el-button size="small" @click="updateOverlay('green', { alwaysOnTop: !form.overlayGreen?.alwaysOnTop })">{{ form.overlayGreen?.alwaysOnTop ? '已置顶' : '不置顶' }}</el-button></div></div>
         <div class="overlay-setting-row"><div><b>组件窗口</b><small>{{ overlayStatus.slot }} · {{ form.overlaySlot?.width }} × {{ form.overlaySlot?.height }}</small></div><div class="row-controls"><el-switch :model-value="Boolean(form.overlaySlot?.visible)" @update:model-value="toggleOverlay('slot')" /><el-button size="small" @click="updateOverlay('slot', { alwaysOnTop: !form.overlaySlot?.alwaysOnTop })">{{ form.overlaySlot?.alwaysOnTop ? '已置顶' : '不置顶' }}</el-button></div></div>
-        <div class="form-grid"><el-form-item label="绿幕透明度"><el-slider v-model="form.overlayGreen!.opacity" :min="0.1" :max="1" :step="0.05" /></el-form-item><el-form-item label="声音音量"><el-slider v-model="form.audioVolume" :min="0" :max="1" :step="0.05" show-input /></el-form-item></div>
+        <div class="form-grid"><el-form-item v-if="form.overlayGreen" label="绿幕透明度"><el-slider v-model="form.overlayGreen.opacity" :min="0.1" :max="1" :step="0.05" /></el-form-item><el-form-item label="声音音量"><el-slider v-model="form.audioVolume" :min="0" :max="1" :step="0.05" show-input /></el-form-item></div>
       </section>
       <section class="settings-card data-card">
         <div class="settings-title"><span class="settings-index">C</span><div><h2>弹幕记录</h2><p>默认 30 天 / 20 万条，原始数据默认关闭。</p></div></div>

@@ -141,6 +141,8 @@ export interface OverlaySettings {
   visible: boolean
   alwaysOnTop: boolean
   opacity: number
+  /** 组件窗口专用：true = 底板完全透明（只留活动组件），false = 显示深色底板。绿幕窗口不使用。 */
+  backgroundTransparent: boolean
   width: number
   height: number
   laneCount: number
@@ -171,6 +173,7 @@ export interface OverlayWindowStatus {
   mode: OverlayWindowMode
   fullscreen: boolean
   opacity: number
+  backgroundTransparent: boolean
 }
 
 export interface AppSettings {
