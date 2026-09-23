@@ -1,0 +1,10 @@
+node_modules/
+out/
+release/
+license-data/
+.vite/
+dist/
+*.db
+*.db-wal
+*.db-shm
+.DS_Store
