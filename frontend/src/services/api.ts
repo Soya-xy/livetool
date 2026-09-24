@@ -50,6 +50,7 @@ export const api: LiveToolApi = {
     slot: (payload) => result(Backend.OverlaySlot(payload)),
     widget: (payload) => result(Backend.OverlayWidget(payload as unknown as Models.OverlayWidgetPayload)),
     removeWidget: (featureId) => result(Backend.OverlayRemoveWidget(featureId as unknown as Models.FeatureID)),
+    decrementScreenLock: () => result(Backend.OverlayDecrementScreenLock()),
     onMessage: (callback) => subscribe('overlay:message', callback),
     onStatus: (callback) => subscribe('overlay:status', callback),
   },
@@ -79,6 +80,7 @@ export const api: LiveToolApi = {
     test: (id) => result(Backend.FeatureTest(id as unknown as Models.FeatureID)),
     show: (id) => result(Backend.FeatureShow(id as unknown as Models.FeatureID)),
     increment: (id, key, amount) => result(Backend.FeatureIncrement(id as unknown as Models.FeatureID, key, amount)),
+    selectLockMedia: () => result(Backend.FeatureSelectLockMedia()),
   },
   auth: {
     status: () => result(Backend.AuthStatus()),

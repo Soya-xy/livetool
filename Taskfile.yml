@@ -38,7 +38,8 @@ tasks:
     cmds:
       - task: bindings
       - task: frontend:build
-      - go build -tags production -trimpath -buildvcs=false -ldflags="-s -w {{.WINDOWS_GUI_FLAG}} -X main.Version={{.VERSION}} -X main.LicenseServerURL={{.LICENSE_SERVER_URL}}" -o bin/{{.APP_NAME}}{{.EXE_EXT}} .
+      # Wails macOS WKWebView transparency needs this tag; other platforms ignore it.
+      - go build -tags production,private_mac_apis -trimpath -buildvcs=false -ldflags="-s -w {{.WINDOWS_GUI_FLAG}} -X main.Version={{.VERSION}} -X main.LicenseServerURL={{.LICENSE_SERVER_URL}}" -o bin/{{.APP_NAME}}{{.EXE_EXT}} .
 
   windows:build:
     desc: Build the production Windows amd64 desktop executable
@@ -76,7 +77,8 @@ tasks:
 
   run:
     cmds:
-      - go run .
+      # Matches the dev config so local component transparency works on macOS.
+      - go run -tags private_mac_apis .
 
   dev:
     cmds:

@@ -516,8 +516,8 @@ func (s *AppService) executeFeature(id FeatureID, config FeatureConfig, event Li
 		settings := s.overlaySettings("green")
 		settings.Background, _ = value("backgroundColor", "#00ff00").(string)
 		settings.LaneCount, _ = numeric(value("laneCount", 3)), true
-		settings.AlwaysOnTop, _ = value("alwaysOnTop", true).(bool)
-		if _, err := s.OverlayUpdateSettings("green", map[string]any{"background": settings.Background, "laneCount": settings.LaneCount, "alwaysOnTop": settings.AlwaysOnTop}); err != nil {
+		settings.AlwaysOnTop = false
+		if _, err := s.OverlayUpdateSettings("green", map[string]any{"background": settings.Background, "laneCount": settings.LaneCount, "alwaysOnTop": false}); err != nil {
 			return err
 		}
 		if _, err := s.OverlayOpen("green"); err != nil {
@@ -530,7 +530,7 @@ func (s *AppService) executeFeature(id FeatureID, config FeatureConfig, event Li
 			return s.OverlayPlayVideo(OverlayVideoPayload{Path: path, DurationMS: duration, Loop: loop})
 		}
 	case FeatureComponentWindow:
-		if _, err := s.OverlayUpdateSettings("slot", map[string]any{"width": numeric(value("width", 960)), "height": numeric(value("height", 540)), "alwaysOnTop": value("alwaysOnTop", true)}); err != nil {
+		if _, err := s.OverlayUpdateSettings("slot", map[string]any{"width": numeric(value("width", 960)), "height": numeric(value("height", 540)), "alwaysOnTop": false}); err != nil {
 			return err
 		}
 		_, err := s.OverlayOpen("slot")
@@ -663,7 +663,15 @@ func (s *AppService) executeFeature(id FeatureID, config FeatureConfig, event Li
 		}
 		return widget(OverlayWidgetPayload{FeatureID: id, Kind: "sticker", Title: "礼物咖", Values: active.Values, Data: data})
 	case FeatureScreenLock:
-		return widget(OverlayWidgetPayload{FeatureID: id, Kind: "lock", Title: "屏幕锁键", Values: active.Values, Data: map[string]any{"locked": true}})
+		pressesPerGift := min(9999, max(1, numeric(value("pressesPerGift", 1))))
+		delta := pressesPerGift * giftCount
+		return s.applyScreenLockGift(OverlayWidgetPayload{
+			FeatureID: id,
+			Kind:      "lock",
+			Title:     "屏幕锁键",
+			Values:    active.Values,
+			Data:      map[string]any{"locked": true, "giftName": giftName(event)},
+		}, ruleAction, delta)
 	case FeatureMosquitoSlap:
 		return widget(OverlayWidgetPayload{FeatureID: id, Kind: "mosquito", Title: "拍蚊子", Values: active.Values, Data: map[string]any{"durationMs": value("durationMs", 20000), "score": 0}})
 	default:
@@ -726,13 +734,44 @@ func (s *AppService) showFeaturePreview(id FeatureID, config FeatureConfig) (boo
 		}
 		payload = OverlayWidgetPayload{FeatureID: id, Kind: "sticker", Title: "礼物咖", Values: values, Data: data}
 	case FeatureScreenLock:
-		payload = OverlayWidgetPayload{FeatureID: id, Kind: "lock", Title: "屏幕锁键", Values: values, Data: map[string]any{"preview": true, "locked": false}}
+		payload = OverlayWidgetPayload{FeatureID: id, Kind: "lock", Title: "屏幕锁键", Values: values, Data: map[string]any{"preview": true, "locked": false, "remainingPresses": 3}}
 	case FeatureMosquitoSlap:
 		payload = OverlayWidgetPayload{FeatureID: id, Kind: "mosquito", Title: "拍蚊子", Values: values, Data: map[string]any{"preview": true, "durationMs": featureValue(config, "durationMs", 20000), "score": 0}}
 	default:
 		return false, nil
 	}
 	return true, s.OverlayWidget(payload)
+}
+
+func (s *AppService) applyScreenLockGift(payload OverlayWidgetPayload, action string, delta int) error {
+	s.screenLockMu.Lock()
+	defer s.screenLockMu.Unlock()
+
+	s.mu.Lock()
+	previous, exists := s.slotWidgets[FeatureScreenLock]
+	s.mu.Unlock()
+	remaining := 0
+	if exists && previous.Kind == "lock" && previous.Data["locked"] == true && previous.Data["preview"] != true {
+		remaining = min(999999, max(0, numeric(previous.Data["remainingPresses"])))
+	}
+	delta = min(999999, max(1, delta))
+	if action == "减少" {
+		if remaining == 0 {
+			return nil
+		}
+		remaining = max(0, remaining-delta)
+		if remaining == 0 {
+			s.overlayRemoveWidget(FeatureScreenLock)
+			return nil
+		}
+	} else {
+		remaining = min(999999, remaining+delta)
+	}
+
+	payload.Data["locked"] = true
+	payload.Data["preview"] = false
+	payload.Data["remainingPresses"] = remaining
+	return s.overlayWidget(payload)
 }
 
 func (s *AppService) hasEventWidget(id FeatureID) bool {

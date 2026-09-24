@@ -141,7 +141,7 @@ export interface OverlaySettings {
   visible: boolean
   alwaysOnTop: boolean
   opacity: number
-  /** 组件窗口专用：true = 底板完全透明（只留活动组件），false = 显示深色底板。绿幕窗口不使用。 */
+  /** 组件窗口专用：true = 完全透明底板，false = 不透明深色底板。绿幕窗口不使用。 */
   backgroundTransparent: boolean
   width: number
   height: number
@@ -284,6 +284,7 @@ export interface LiveToolApi {
     slot: (payload: { theme?: string; pool?: string[]; weights?: number[]; images?: string[]; durationMs?: number; audioPath?: string }) => Promise<void>
     widget: (payload: OverlayWidgetPayload) => Promise<void>
     removeWidget: (featureId: FeatureId) => Promise<void>
+    decrementScreenLock: () => Promise<number>
     onMessage: (cb: (message: { target: 'green' | 'slot'; type: string; payload: unknown }) => void) => () => void
     onStatus: (cb: (status: OverlayWindowStatus) => void) => () => void
   }
@@ -313,6 +314,7 @@ export interface LiveToolApi {
     test: (featureId: FeatureId) => Promise<{ ok: boolean; message: string }>
     show: (featureId: FeatureId) => Promise<{ ok: boolean; message: string }>
     increment: (featureId: FeatureId, key: string, amount: number) => Promise<number>
+    selectLockMedia: () => Promise<string>
   }
   auth: {
     status: () => Promise<LicenseAuthStatus>

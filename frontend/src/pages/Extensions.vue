@@ -175,13 +175,13 @@ async function openFeatureWindow(type: OverlayType, config: FeatureConfig): Prom
     await api.overlay.updateSettings('green', {
       background: valueOf(config, 'backgroundColor', '#00ff00'),
       laneCount: valueOf(config, 'laneCount', 3),
-      alwaysOnTop: valueOf(config, 'alwaysOnTop', true),
+      alwaysOnTop: false,
     })
   } else {
     await api.overlay.updateSettings('slot', {
       width: valueOf(config, 'width', 960),
       height: valueOf(config, 'height', 540),
-      alwaysOnTop: valueOf(config, 'alwaysOnTop', true),
+      alwaysOnTop: false,
       background: '#00ff00',
     })
   }
@@ -199,7 +199,7 @@ async function setOverlayMode(type: OverlayType, mode: OverlayWindowMode): Promi
 async function toggleSlotBackground(): Promise<void> {
   const status = await api.overlay.toggleOpacity('slot')
   ElMessage.info(status.backgroundTransparent
-    ? '组件窗背景已透明，OBS 窗口采集请开启「允许透明度」'
+    ? '组件窗底板已完全透明，只显示组件内容'
     : '组件窗已显示深色底板')
 }
 

@@ -26,5 +26,6 @@ dev_mode:
       type: background
     - cmd: npm --prefix frontend run build
       type: blocking
-    - cmd: go run .
+    # Wails otherwise leaves WKWebView opaque over a transparent NSWindow.
+    - cmd: go run -tags private_mac_apis .
       type: primary

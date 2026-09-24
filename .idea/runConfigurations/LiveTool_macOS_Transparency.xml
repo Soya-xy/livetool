@@ -1,0 +1,13 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="阿比直播工具 (macOS 透明窗口)" type="GoApplicationRunConfiguration" factoryName="Go Application">
+    <module name="livetool" />
+    <working_directory value="$PROJECT_DIR$" />
+    <go_parameters value="-tags=private_mac_apis" />
+    <parameters value="" />
+    <kind value="PACKAGE" />
+    <package value="livetool" />
+    <directory value="$PROJECT_DIR$" />
+    <filePath value="$PROJECT_DIR$/main.go" />
+    <method v="2" />
+  </configuration>
+</component>

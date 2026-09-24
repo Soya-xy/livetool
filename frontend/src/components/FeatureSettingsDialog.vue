@@ -3,6 +3,7 @@ import { ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import type { FeatureConfig, FeatureDefinition, FeatureField, FeatureGiftRule, FeatureValue } from '@shared/features'
 import { createDefaultFeatureSettings } from '@shared/features'
+import { api } from '../services/api'
 
 const props = defineProps<{
   modelValue: boolean
@@ -17,6 +18,7 @@ const emit = defineEmits<{
 
 const draft = ref<FeatureConfig | null>(null)
 const expandedGiftRules = ref<string[]>([])
+const selectingLockMedia = ref(false)
 
 watch(() => props.modelValue, (visible) => {
   if (visible) loadDraft()
@@ -50,8 +52,43 @@ function numberValue(field: FeatureField): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : Number(field.defaultValue) || 0
 }
 
+function currentLockMediaPath(): string {
+  const value = draft.value?.values.lockMediaPath
+  return typeof value === 'string' ? value : ''
+}
+
+function lockMediaFilename(path: string): string {
+  return path.split(/[\\/]/).pop() || path
+}
+
+function isLockMediaVideo(path: string): boolean {
+  return /\.(mp4|webm|mov|m4v)$/i.test(path)
+}
+
+async function chooseLockMedia(): Promise<void> {
+  selectingLockMedia.value = true
+  try {
+    const path = await api.features.selectLockMedia()
+    if (!path) return
+    setField('lockMediaPath', path)
+    ElMessage.success('素材已添加，保存设置后生效')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error))
+  } finally {
+    selectingLockMedia.value = false
+  }
+}
+
+function removeLockMedia(): void {
+  setField('lockMediaPath', '')
+}
+
 function fieldsForGiftRules(): FeatureField[] {
   return props.feature?.fields.filter((field) => !field.giftOnly) ?? []
+}
+
+function fieldsForGeneralSettings(): FeatureField[] {
+  return props.feature?.fields.filter((field) => !field.giftOnly && !(props.feature?.id === 'screen-lock' && field.key === 'lockMediaPath')) ?? []
 }
 
 function inlineGiftFields(): FeatureField[] {
@@ -147,7 +184,7 @@ function save(): void {
 
       <el-form label-position="top" class="feature-settings-form">
         <div class="feature-settings-grid">
-          <el-form-item v-for="field in feature.fields.filter((item) => !item.giftOnly)" :key="field.key" :label="field.label">
+          <el-form-item v-for="field in fieldsForGeneralSettings()" :key="field.key" :label="field.label">
             <el-input
               v-if="field.type === 'text'"
               :model-value="String(fieldValue(field))"
@@ -186,6 +223,34 @@ function save(): void {
         </div>
       </el-form>
 
+      <section v-if="feature.id === 'screen-lock'" class="lock-style-panel" aria-label="锁屏样式">
+        <div class="lock-style-heading">
+          <div>
+            <b>锁屏样式</b>
+            <small>图片或视频会作为锁屏背景，解锁提示和剩余次数仍会显示。</small>
+          </div>
+          <span class="lock-style-status" :class="{ selected: currentLockMediaPath() }">
+            {{ currentLockMediaPath() ? (isLockMediaVideo(currentLockMediaPath()) ? '已选视频' : '已选图片') : '使用默认样式' }}
+          </span>
+        </div>
+        <div class="lock-style-row">
+          <div class="lock-style-file">
+            <span class="lock-style-file-mark">{{ currentLockMediaPath() ? (isLockMediaVideo(currentLockMediaPath()) ? '视频' : '图片') : '默认' }}</span>
+            <div>
+              <b>{{ currentLockMediaPath() ? lockMediaFilename(currentLockMediaPath()) : '未选择背景素材' }}</b>
+              <small>{{ currentLockMediaPath() ? '锁屏时自动铺满窗口' : '保留当前纯色锁屏效果' }}</small>
+            </div>
+          </div>
+          <div class="lock-style-actions">
+            <el-button type="primary" plain :loading="selectingLockMedia" @click="chooseLockMedia">
+              {{ currentLockMediaPath() ? '更换素材' : '选择图片或视频' }}
+            </el-button>
+            <el-button v-if="currentLockMediaPath()" link type="danger" @click="removeLockMedia">移除</el-button>
+          </div>
+        </div>
+        <small class="lock-style-help">支持 PNG、JPG、WebP、GIF、BMP 图片及 MP4、WebM、MOV、M4V 视频；留空时继续使用现有样式。</small>
+      </section>
+
       <section v-if="feature.giftRules || draft.giftRules.length" class="gift-rule-panel">
         <div class="gift-rule-heading">
           <div>
@@ -200,9 +265,9 @@ function save(): void {
               <el-input v-model="rule.giftName" :name="`gift-${rule.id}`" autocomplete="off" spellcheck="false" :aria-label="`礼物名称：${rule.giftName || '未命名'}`" placeholder="礼物名称…" />
               <el-select v-model="rule.action" class="gift-action-select" :aria-label="`礼物动作：${rule.giftName || '未命名'}`">
                 <el-option label="增加" value="增加" />
-                <el-option label="触发" value="触发" />
+                <el-option v-if="feature.id !== 'screen-lock'" label="触发" value="触发" />
                 <el-option label="减少" value="减少" />
-                <el-option label="播放" value="播放" />
+                <el-option v-if="feature.id !== 'screen-lock'" label="播放" value="播放" />
               </el-select>
               <div v-for="field in inlineGiftFields()" :key="field.key" class="gift-rule-inline-value">
                 <span>{{ field.label }}</span>
@@ -215,6 +280,7 @@ function save(): void {
                   controls-position="right"
                   @update:model-value="setGiftRuleField(rule, field, $event)"
                 />
+                <small v-if="field.help" class="gift-rule-inline-help">{{ field.help }}</small>
                 <el-button v-if="hasGiftRuleOverride(rule, field)" link type="info" :aria-label="`恢复礼物 ${rule.giftName || '未命名'} 的${field.label}默认值`" @click="resetGiftRuleField(rule, field)">默认</el-button>
               </div>
               <el-switch v-model="rule.enabled" :aria-label="`启用礼物规则：${rule.giftName || '未命名'}`" />

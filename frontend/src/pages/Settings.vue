@@ -82,9 +82,9 @@ async function importConfig(): Promise<void> { const result = await api.config.i
         </el-form>
       </section>
       <section class="settings-card data-card">
-        <div class="settings-title"><span class="settings-index">B</span><div><h2>Overlay 窗口</h2><p>绿幕和组件窗口是独立窗口，可供 OBS 采集。</p></div></div>
-        <div class="overlay-setting-row"><div><b>绿幕窗口</b><small>{{ overlayStatus.green }} · {{ form.overlayGreen?.width }} × {{ form.overlayGreen?.height }}</small></div><div class="row-controls"><el-switch :model-value="Boolean(form.overlayGreen?.visible)" aria-label="启用绿幕窗口" @update:model-value="toggleOverlay('green')" /><el-button size="small" @click="updateOverlay('green', { alwaysOnTop: !form.overlayGreen?.alwaysOnTop })">{{ form.overlayGreen?.alwaysOnTop ? '已置顶' : '不置顶' }}</el-button></div></div>
-        <div class="overlay-setting-row"><div><b>组件窗口</b><small>{{ overlayStatus.slot }} · {{ form.overlaySlot?.width }} × {{ form.overlaySlot?.height }}</small></div><div class="row-controls"><el-switch :model-value="Boolean(form.overlaySlot?.visible)" aria-label="启用组件窗口" @update:model-value="toggleOverlay('slot')" /><el-button size="small" @click="updateOverlay('slot', { alwaysOnTop: !form.overlaySlot?.alwaysOnTop })">{{ form.overlaySlot?.alwaysOnTop ? '已置顶' : '不置顶' }}</el-button></div></div>
+        <div class="settings-title"><span class="settings-index">B</span><div><h2>Overlay 窗口</h2><p>绿幕和组件窗口按普通窗口显示，可被其他窗口覆盖。</p></div></div>
+        <div class="overlay-setting-row"><div><b>绿幕窗口</b><small>{{ overlayStatus.green }} · {{ form.overlayGreen?.width }} × {{ form.overlayGreen?.height }}</small></div><div class="row-controls"><el-switch :model-value="Boolean(form.overlayGreen?.visible)" aria-label="启用绿幕窗口" @update:model-value="toggleOverlay('green')" /></div></div>
+        <div class="overlay-setting-row"><div><b>组件窗口</b><small>{{ overlayStatus.slot }} · {{ form.overlaySlot?.width }} × {{ form.overlaySlot?.height }}</small></div><div class="row-controls"><el-switch :model-value="Boolean(form.overlaySlot?.visible)" aria-label="启用组件窗口" @update:model-value="toggleOverlay('slot')" /></div></div>
         <div class="form-grid"><el-form-item v-if="form.overlayGreen" label="绿幕透明度"><el-slider v-model="form.overlayGreen.opacity" :min="0.1" :max="1" :step="0.05" /></el-form-item><el-form-item label="声音音量"><el-slider v-model="form.audioVolume" :min="0" :max="1" :step="0.05" show-input /></el-form-item></div>
       </section>
       <section class="settings-card data-card">

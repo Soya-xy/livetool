@@ -22,6 +22,7 @@ const applicationVersion = "0.2.0"
 
 type AppService struct {
 	mu              sync.Mutex
+	screenLockMu    sync.Mutex
 	settingsMu      sync.RWMutex
 	authMu          sync.RWMutex
 	app             *application.App
@@ -415,7 +416,7 @@ func (s *AppService) DiagnosticsAssets() ([]string, error) {
 			return nil
 		}
 		ext := strings.ToLower(filepath.Ext(entry.Name()))
-		if strings.Contains("|.png|.jpg|.jpeg|.bmp|.gif|.svg|.mp3|.wav|.mp4|", "|"+ext+"|") {
+		if strings.Contains("|.png|.jpg|.jpeg|.bmp|.gif|.svg|.webp|.mp3|.wav|.mp4|.webm|.mov|.m4v|", "|"+ext+"|") {
 			rel, err := filepath.Rel(s.assetsRoot, path)
 			if err != nil {
 				return err

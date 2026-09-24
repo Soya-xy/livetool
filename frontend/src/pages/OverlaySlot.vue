@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import NumberFlow from '@number-flow/vue'
 import type { FeatureValue } from '@shared/features'
 import type { OverlayWidgetPayload } from '@shared/types'
 import { api } from '../services/api'
@@ -11,7 +12,7 @@ interface AccelerationJob { total: number; completed: number; startedAt: number 
 const widgets = ref<ActiveWidget[]>([])
 const slotRun = ref<SlotRun | null>(null)
 const speechNotice = ref('')
-// 底板模式：true = WebView 背景透明，只显示活动组件；false = 显示深色底板。
+// 底板模式：true = 客户区完全透明；false = 显示不透明深色底板。
 const backgroundTransparent = ref(true)
 const fallbackFruit = ['🍺', '💖', '🎁', '🍀', '⭐', '🎈', '🌈', '🍉', '🧧', '💎', '🎯', '🪙', '🎉', '🏆']
 const activeTimers = new Map<string, ReturnType<typeof setInterval>>()
@@ -57,6 +58,20 @@ function showWidget(payload: OverlayWidgetPayload): void {
   }
 
   let widget = widgets.value.find((item) => item.featureId === payload.featureId)
+  if (payload.kind === 'lock') {
+    if (!data.preview && data.locked && data.remainingPresses === undefined) data.remainingPresses = 1
+    clearWidgetTimers(payload.featureId)
+    if (!widget) {
+      widget = { ...payload, data }
+      widgets.value.push(widget)
+    } else {
+      widget.title = payload.title
+      widget.values = { ...payload.values }
+      widget.data = data
+    }
+    if (data.unlocking) hideAfter(widget, 850)
+    return
+  }
   if (payload.kind === 'acceleration') {
     if (!widget) {
       widget = { ...payload, data: { ...data, currentCount: 0, targetCount: 0, pendingCount: 0, progress: 0, batchCount: 0 } }
@@ -304,13 +319,9 @@ function hideAfter(widget: ActiveWidget, duration: number): void {
 
 function handleUnlockKey(event: KeyboardEvent): void {
   const locked = widgets.value.find((widget) => widget.kind === 'lock' && widget.data.locked)
-  if (!locked) return
-  const configured = String(locked.values.unlockKey ?? 'SPACE').trim().toUpperCase()
-  const actual = event.key === ' ' ? 'SPACE' : event.key.toUpperCase()
-  if (event.key === 'Escape' || configured === actual) {
-    event.preventDefault()
-    removeWidget(locked.featureId)
-  }
+  if (!locked || locked.data.preview || locked.data.unlocking || event.code !== 'Space' || event.repeat) return
+  event.preventDefault()
+  void api.overlay.decrementScreenLock().catch(() => undefined)
 }
 
 async function clickWoodfish(widget: ActiveWidget): Promise<void> {
@@ -374,11 +385,20 @@ function wheelGradient(poolText: string, weightText: string): string {
   })
   return `conic-gradient(${stops.join(', ')})`
 }
+
+function lockMediaPath(widget: ActiveWidget): string {
+  const value = widget.values.lockMediaPath
+  return typeof value === 'string' ? value : ''
+}
+
+function isLockMediaVideo(widget: ActiveWidget): boolean {
+  return /\.(mp4|webm|mov|m4v)$/i.test(lockMediaPath(widget))
+}
 </script>
 
 <template>
   <div class="slot-overlay" :class="[slotRun?.theme ?? 'default', { 'panel-background': !backgroundTransparent }]">
-    <header class="component-status-bar"><b>yapp · 组件窗口</b><span>{{ widgets.length }} 个活动组件</span><span>ESC 可紧急解除窗口锁定</span></header>
+    <header class="component-status-bar"><b>yapp · 组件窗口</b><span>{{ widgets.length }} 个活动组件</span><span>屏幕锁键需按对应次数空格解锁</span></header>
     <div v-if="speechNotice" class="speech-notice" aria-live="polite">{{ speechNotice }}</div>
     <section v-if="slotRun" class="slot-game">
       <div class="slot-header"><span>LUCKY</span><b>水果机</b><span>DROP</span></div>
@@ -393,7 +413,17 @@ function wheelGradient(poolText: string, weightText: string): string {
 
     <div v-if="!widgets.length && !slotRun" class="component-placeholder"><b>yapp</b><span>组件窗口已打开，等待玩法输出</span></div>
     <section v-if="widgets.length" class="widget-stage">
-      <article v-for="widget in widgets" :key="widget.featureId" class="widget-card" :class="[`widget-${widget.kind}`, { 'widget-lock-active': widget.kind === 'lock' && widget.data.locked }]" :style="{ '--widget-accent': String(widget.values.barColor ?? widget.values.lockColor ?? '#51c9dc') }">
+      <article v-for="widget in widgets" :key="widget.featureId" class="widget-card" :class="[`widget-${widget.kind}`, { 'widget-lock-active': widget.kind === 'lock' && widget.data.locked, 'widget-lock-preview': widget.kind === 'lock' && widget.data.preview }]" :style="{ '--widget-accent': String(widget.values.barColor ?? widget.values.lockColor ?? '#51c9dc') }">
+        <div v-if="widget.kind === 'lock' && widget.data.preview && lockMediaPath(widget) && !widget.data.lockMediaFailed" class="lock-preview-media" aria-label="锁屏背景预览">
+          <video v-if="isLockMediaVideo(widget)" :key="lockMediaPath(widget)" :src="lockMediaPath(widget)" autoplay muted loop playsinline aria-hidden="true" @error="widget.data.lockMediaFailed = true" />
+          <img v-else :key="lockMediaPath(widget)" :src="lockMediaPath(widget)" alt="" @error="widget.data.lockMediaFailed = true">
+          <span>锁屏背景预览</span>
+        </div>
+        <div v-else-if="widget.kind === 'lock' && !widget.data.preview && lockMediaPath(widget) && !widget.data.lockMediaFailed" class="lock-active-media" aria-hidden="true">
+          <video v-if="isLockMediaVideo(widget)" :key="lockMediaPath(widget)" :src="lockMediaPath(widget)" autoplay muted loop playsinline @error="widget.data.lockMediaFailed = true" />
+          <img v-else :key="lockMediaPath(widget)" :src="lockMediaPath(widget)" alt="" @error="widget.data.lockMediaFailed = true">
+          <span />
+        </div>
         <h2>{{ widget.title }}</h2>
         <template v-if="widget.kind === 'acceleration'">
           <strong class="widget-large-number">{{ widget.data.currentCount ?? 0 }}<small> / {{ widget.data.targetCount }}</small></strong>
@@ -439,9 +469,28 @@ function wheelGradient(poolText: string, weightText: string): string {
           <small>{{ widget.data.preview ? '等待礼物触发' : '玩法效果状态' }}</small>
         </template>
         <template v-else-if="widget.kind === 'lock'">
-          <div class="lock-message">{{ widget.values.displayContent }}</div>
-          <p v-if="widget.data.preview">组件已启用 · 收到绑定礼物后锁定</p>
-          <p v-else>按 {{ widget.values.unlockKey }} 解锁 · ESC 可紧急解除</p>
+          <div v-if="widget.data.preview" class="lock-preview-content">
+            <div class="lock-preview-status">
+              <span class="lock-preview-badge">玩法预览</span>
+              <span class="lock-preview-state"><i />当前未锁定</span>
+            </div>
+            <p class="lock-preview-title">收到已绑定的礼物后，按对应次数解锁</p>
+            <div class="lock-preview-calculation">
+              <span>礼物触发后的次数计算</span>
+              <div class="lock-preview-equation">
+                <b>每个礼物设置的次数</b><i>×</i><b>礼物份数</b><i>=</i><strong>总解锁次数</strong>
+              </div>
+            </div>
+            <div class="lock-preview-key"><span>解锁按键</span><kbd>SPACE</kbd><span>按够总次数即可解锁</span></div>
+            <small>每种礼物可单独设置次数，礼物连击会累计。</small>
+          </div>
+          <div v-else class="lock-content">
+            <span class="lock-eyebrow">{{ widget.data.unlocking ? '解锁完成' : '屏幕已锁定' }}</span>
+            <div class="lock-message">{{ widget.values.displayContent || '请按空格解锁' }}</div>
+            <span class="lock-count-label">剩余空格次数</span>
+            <NumberFlow class="lock-count-number" :value="Number(widget.data.remainingPresses ?? 0)" :format="{ useGrouping: false }" :will-change="true" />
+            <p>{{ widget.data.unlocking ? '屏幕锁定已解除' : '连续按空格键完成解锁' }}</p>
+          </div>
         </template>
         <template v-else-if="widget.kind === 'mosquito'">
           <div class="mosquito-game">

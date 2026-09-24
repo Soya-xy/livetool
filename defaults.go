@@ -28,8 +28,8 @@ func defaultAppSettings(version, assetsRoot string) AppSettings {
 	return AppSettings{
 		Version: version, DevMode: localDevelopmentModeAllowed(), LogLevel: "info", RetentionDays: 30, RetentionMaxRows: 200000,
 		StoreRaw: false, Hotkey: "Ctrl + Shift + 1-9", AudioVolume: 0.8, AssetsRoot: assetsRoot,
-		OverlayGreen: OverlaySettings{Visible: false, AlwaysOnTop: true, Opacity: 1, Width: 960, Height: 540, LaneCount: 3, Background: "#00ff00"},
-		OverlaySlot:  OverlaySettings{Visible: false, AlwaysOnTop: true, Opacity: 1, BackgroundTransparent: true, Width: 960, Height: 540, LaneCount: 1, Background: "#000000"},
+		OverlayGreen: OverlaySettings{Visible: false, AlwaysOnTop: false, Opacity: 1, Width: 960, Height: 540, LaneCount: 3, Background: "#00ff00"},
+		OverlaySlot:  OverlaySettings{Visible: false, AlwaysOnTop: false, Opacity: 1, BackgroundTransparent: true, Width: 960, Height: 540, LaneCount: 1, Background: "#000000"},
 		Platform:     PlatformSimulator, RoomID: "demo-room", AuthServerURL: configuredLicenseServerURL(),
 		OBSURL: "ws://127.0.0.1:4455", AutoStart: false, Features: defaultFeatureSettings(),
 	}
@@ -48,8 +48,8 @@ func defaultFeatureSettings() FeatureSettings {
 		}
 		settings[id] = FeatureConfig{Enabled: false, Values: values, GiftRules: rules}
 	}
-	add(FeatureGreenWindow, map[string]any{"displayContent": "视频组件", "videoPath": "", "videoDurationMs": 8000, "videoLoop": false, "backgroundColor": "#00ff00", "laneCount": 3, "alwaysOnTop": true}, false)
-	add(FeatureComponentWindow, map[string]any{"displayContent": "组件内容", "width": 960, "height": 540, "alwaysOnTop": true}, false)
+	add(FeatureGreenWindow, map[string]any{"displayContent": "视频组件", "videoPath": "", "videoDurationMs": 8000, "videoLoop": false, "backgroundColor": "#00ff00", "laneCount": 3, "alwaysOnTop": false}, false)
+	add(FeatureComponentWindow, map[string]any{"displayContent": "组件内容", "width": 960, "height": 540, "alwaysOnTop": false}, false)
 	add(FeatureVirtualCamera, map[string]any{"deviceName": "阿比虚拟摄像头", "resolution": "1920x1080", "fps": 30}, false)
 	add(FeatureSpeedCurve, map[string]any{"targetCount": 10, "durationMs": 3000, "curve": "ease-out"}, true)
 	add(FeatureSpeedIba, map[string]any{"targetCount": 10, "durationMs": 3000, "batchSize": 1}, true)
@@ -64,7 +64,7 @@ func defaultFeatureSettings() FeatureSettings {
 	add(FeatureLottery, map[string]any{"pool": "一等奖, 二等奖, 谢谢参与", "weights": "1, 10, 89", "durationMs": 1700}, true)
 	add(FeatureCounter, map[string]any{"displayContent": "礼物计数", "initialValue": 0, "step": 1, "currentValue": 0}, true)
 	add(FeatureGiftPool, map[string]any{"pool": "啤酒, 小心心, 平底锅", "durationMs": 3500, "randomize": true, "nextStickerIndex": 0}, true)
-	add(FeatureScreenLock, map[string]any{"displayContent": "123", "lockColor": "#e53935", "unlockKey": "SPACE"}, true)
+	add(FeatureScreenLock, map[string]any{"displayContent": "请按空格解锁", "lockColor": "#e53935", "pressesPerGift": 1, "lockMediaPath": ""}, true)
 	add(FeatureMosquitoSlap, map[string]any{"imagePath": "idle.png", "durationMs": 20000, "score": 1}, true)
 	return settings
 }
@@ -98,6 +98,9 @@ func mergeAppSettings(input AppSettings, version, assetsRoot string) AppSettings
 	if input.OverlaySlot.Width < 1 {
 		input.OverlaySlot = defaults.OverlaySlot
 	}
+	// Existing user configs may still have these windows pinned from older builds.
+	input.OverlayGreen.AlwaysOnTop = false
+	input.OverlaySlot.AlwaysOnTop = false
 	if input.Platform == "" {
 		input.Platform = defaults.Platform
 	}
@@ -143,6 +146,9 @@ func mergeFeatureSettings(input FeatureSettings) FeatureSettings {
 		}
 		if value.GiftRules == nil {
 			value.GiftRules = fallback.GiftRules
+		}
+		if id == FeatureGreenWindow || id == FeatureComponentWindow {
+			value.Values["alwaysOnTop"] = false
 		}
 		input[id] = value
 	}

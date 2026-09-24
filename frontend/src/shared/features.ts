@@ -78,11 +78,11 @@ const select = (key: string, label: string, defaultValue: string, options: Featu
 export const FEATURE_DEFINITIONS: FeatureDefinition[] = [
   {
     id: 'green-window', name: '绿幕窗口', description: '一个绿色的窗口，用于展示视频、组件等效果', icon: 'VideoCamera', accent: '#0b5d1e',
-    fields: [text('displayContent', '显示内容', '视频组件', '例如：视频组件'), text('videoPath', '测试视频', '', '选择素材目录中的视频路径'), number('videoDurationMs', '播放时长(ms)', 8000, 100, 600000), toggle('videoLoop', '循环播放', false), color('backgroundColor', '绿幕颜色', '#00ff00'), number('laneCount', '显示通道', 3, 1, 8), toggle('alwaysOnTop', '窗口置顶', true)],
+    fields: [text('displayContent', '显示内容', '视频组件', '例如：视频组件'), text('videoPath', '测试视频', '', '选择素材目录中的视频路径'), number('videoDurationMs', '播放时长(ms)', 8000, 100, 600000), toggle('videoLoop', '循环播放', false), color('backgroundColor', '绿幕颜色', '#00ff00'), number('laneCount', '显示通道', 3, 1, 8)],
   },
   {
     id: 'component-window', name: '组件窗口', description: '用于显示组件的窗口，如：电子木鱼等', icon: 'Grid', accent: '#ff4650', badge: '组件',
-    fields: [text('displayContent', '显示内容', '组件内容', '例如：电子木鱼'), number('width', '窗口宽度', 960, 240, 3840), number('height', '窗口高度', 540, 160, 2160), toggle('alwaysOnTop', '窗口置顶', true)],
+    fields: [text('displayContent', '显示内容', '组件内容', '例如：电子木鱼'), number('width', '窗口宽度', 960, 240, 3840), number('height', '窗口高度', 540, 160, 2160)],
   },
   {
     id: 'virtual-camera', name: '虚拟摄像头', description: '用于显示组件的摄像头输出', icon: 'Camera', accent: '#22c6c9', badge: 'new',
@@ -147,8 +147,13 @@ export const FEATURE_DEFINITIONS: FeatureDefinition[] = [
     giftRules: true,
   },
   {
-    id: 'screen-lock', name: '屏幕锁键', description: '整蛊主播的屏幕锁，需键盘按空格键解锁', icon: 'Lock', accent: '#3978ef', badge: '组件',
-    fields: [text('displayContent', '解锁提示', '123', '例如：按空格键解锁'), color('lockColor', '锁键颜色', '#e53935'), text('unlockKey', '解锁按键', 'SPACE')],
+    id: 'screen-lock', name: '屏幕锁键', description: '不同礼物可分别增加空格次数，按完对应次数后解锁', icon: 'Lock', accent: '#3978ef', badge: '组件',
+    fields: [
+      text('displayContent', '解锁提示', '请按空格解锁', '例如：完成空格输入后解锁'),
+      color('lockColor', '锁键颜色', '#e53935'),
+      text('lockMediaPath', '锁屏背景素材', '', '通过下方按钮选择图片或视频'),
+      { ...number('pressesPerGift', '空格次数', 1, 1, 9999, 1, '该礼物每次增加的空格次数，礼物连击会按数量累计。'), giftOnly: true },
+    ],
     giftRules: true,
   },
   {
@@ -170,6 +175,9 @@ export function createDefaultFeatureSettings(input?: Partial<FeatureSettings>): 
       enabled: override?.enabled ?? false,
       values: { ...values, ...(override?.values ?? {}) },
       giftRules: override?.giftRules ? override.giftRules.map((rule) => ({ ...rule, values: { ...(rule.values ?? {}) } })) : defaultGiftRules(feature),
+    }
+    if (feature.id === 'green-window' || feature.id === 'component-window') {
+      settings[feature.id].values.alwaysOnTop = false
     }
   }
   return settings

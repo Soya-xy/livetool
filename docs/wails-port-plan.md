@@ -155,7 +155,7 @@ abi-replica/
 | 窗口 | Wails 配置 | 备注 |
 |---|---|---|
 | 主窗 | `Frameless: false`、`MinWidth/MinHeight: 760×500` | 默认 900×600；保留自绘标题栏 |
-| 绿幕窗 | 普通窗口、`AlwaysOnTop`、不可最小化、底色 `#00FF00` | 与现状一致（色键） |
+| 绿幕窗 | 普通窗口、允许被其他窗口覆盖、不可最小化、底色 `#00FF00` | 使用色键 |
 | 组件窗 | 普通窗口（**系统原生标题栏**）、WebView2 客户区透明 | 使用 Wails `BackgroundTypeTransparent` 与 alpha 0；Windows 11+ 按 Wails 当前支持范围提供透明窗口背景 |
 | 音频窗 | `Hidden: true` | 或独立 `voice.exe` |
 

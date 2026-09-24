@@ -10,7 +10,17 @@ Requires Go and Node.js 20+.
 go run github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.25 task dev
 ```
 
-This starts the Wails desktop app and Vite hot reload. To run only frontend type/build checks:
+This starts the Wails desktop app and Vite hot reload.
+
+On macOS, the component window's transparent WebView requires the `private_mac_apis` build tag. In GoLand, select the shared run configuration **阿比直播工具 (macOS 透明窗口)**; the temporary auto-generated `go build livetool` configuration omits this tag and shows a white client area. From a terminal, run:
+
+```sh
+go run -tags private_mac_apis .
+```
+
+The native titlebar remains visible and opaque. The component window client area is transparent, while each component card keeps its own opaque background.
+
+To run only frontend type/build checks:
 
 ```sh
 npm --prefix frontend ci

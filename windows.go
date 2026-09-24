@@ -301,19 +301,40 @@ func (s *AppService) OverlaySlot(payload map[string]any) error {
 }
 
 func (s *AppService) OverlayWidget(payload OverlayWidgetPayload) error {
+	if payload.FeatureID == FeatureScreenLock {
+		s.screenLockMu.Lock()
+		defer s.screenLockMu.Unlock()
+	}
+	return s.overlayWidget(payload)
+}
+
+func (s *AppService) overlayWidget(payload OverlayWidgetPayload) error {
 	if err := s.requireEntitlement(featureEntitlement(payload.FeatureID)); err != nil {
 		return err
 	}
 	if payload.Values == nil {
 		payload.Values = map[string]any{}
 	}
-	for _, key := range []string{"imagePath", "audioPath"} {
+	payload.Values = cloneAnyMap(payload.Values)
+	for _, key := range []string{"imagePath", "audioPath", "lockMediaPath"} {
 		if value, ok := payload.Values[key].(string); ok && value != "" {
+			if key == "lockMediaPath" && !supportedLockMediaExtension(filepath.Ext(value)) {
+				delete(payload.Values, key)
+				continue
+			}
 			resolved, err := s.resolveAssetPath(value)
 			if err != nil {
+				if key == "lockMediaPath" {
+					delete(payload.Values, key)
+					continue
+				}
 				return err
 			}
 			if info, err := os.Stat(resolved); err != nil || !info.Mode().IsRegular() {
+				if key == "lockMediaPath" {
+					delete(payload.Values, key)
+					continue
+				}
 				kind := "图片"
 				if key == "audioPath" {
 					kind = "音频"
@@ -344,10 +365,47 @@ func (s *AppService) OverlayWidget(payload OverlayWidgetPayload) error {
 }
 
 func (s *AppService) OverlayRemoveWidget(id FeatureID) {
+	if id == FeatureScreenLock {
+		s.screenLockMu.Lock()
+		defer s.screenLockMu.Unlock()
+	}
+	s.overlayRemoveWidget(id)
+}
+
+// OverlayDecrementScreenLock serializes key presses with incoming gift updates
+// and replays the updated count if the component window is reopened.
+func (s *AppService) OverlayDecrementScreenLock() int {
+	s.screenLockMu.Lock()
+	defer s.screenLockMu.Unlock()
+
+	s.mu.Lock()
+	payload, exists := s.slotWidgets[FeatureScreenLock]
+	if !exists || payload.Kind != "lock" || payload.Data["locked"] != true || payload.Data["preview"] == true {
+		s.mu.Unlock()
+		return -1
+	}
+	remaining := max(0, numeric(payload.Data["remainingPresses"])-1)
+	payload.Data["remainingPresses"] = remaining
+	payload.Data["unlocking"] = remaining == 0
+	if remaining == 0 {
+		delete(s.slotWidgets, FeatureScreenLock)
+	} else {
+		s.slotWidgets[FeatureScreenLock] = cloneWidget(payload)
+	}
+	s.mu.Unlock()
+	s.emitOverlayMessage("slot", "component-widget", payload)
+	return remaining
+}
+
+func (s *AppService) overlayRemoveWidget(id FeatureID) {
+	s.forgetOverlayWidget(id)
+	s.emitOverlayMessage("slot", "component-remove", map[string]any{"featureId": id})
+}
+
+func (s *AppService) forgetOverlayWidget(id FeatureID) {
 	s.mu.Lock()
 	delete(s.slotWidgets, id)
 	s.mu.Unlock()
-	s.emitOverlayMessage("slot", "component-remove", map[string]any{"featureId": id})
 }
 
 func (s *AppService) AudioPlay(payload map[string]any) error {
@@ -434,21 +492,36 @@ func (s *AppService) ensureOverlay(kind string) (*application.WebviewWindow, err
 	backgroundType := application.BackgroundTypeSolid
 	var backgroundColour application.RGBA
 	if kind == "slot" {
-		// Keep the native caption while allowing transparent WebView2 pixels to
-		// reveal the window underneath. The slot page paints its opaque panel
-		// itself when BackgroundTransparent is false.
+		// Keep the native caption while allowing transparent webview pixels to
+		// reveal the window underneath. macOS also needs its native window
+		// backdrop enabled; BackgroundType alone only configures the webview.
+		// The slot page paints its panel when BackgroundTransparent is false.
 		backgroundType = application.BackgroundTypeTransparent
 		backgroundColour = application.NewRGBA(0, 0, 0, 0)
 	} else {
 		backgroundColour = wailsColour(overlayBackground(kind, settings))
 	}
+	macOptions := application.MacWindow{}
+	if kind == "slot" {
+		macOptions.Backdrop = application.MacBackdropTransparent
+		// Keep the native titlebar in its standard layout. The transparent window
+		// backdrop clears its default fill, so setOpaqueMacTitlebar restores an
+		// opaque background only in the titlebar area.
+		macOptions.TitleBar = application.MacTitleBar{
+			AppearsTransparent: false,
+			FullSizeContent:    false,
+		}
+	}
 	window := s.app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name: name, Title: title, URL: route, Width: settings.Width, Height: settings.Height,
 		MinWidth: 320, MinHeight: 240, Hidden: true, AlwaysOnTop: settings.AlwaysOnTop, Frameless: false,
-		BackgroundType: backgroundType, BackgroundColour: backgroundColour,
+		BackgroundType: backgroundType, BackgroundColour: backgroundColour, Mac: macOptions,
 		DisableResize: false, MinimiseButtonState: application.ButtonDisabled,
 		MaximiseButtonState: application.ButtonDisabled, UseApplicationMenu: false,
 	})
+	if kind == "slot" {
+		setOpaqueMacTitlebar(window)
+	}
 	s.mu.Lock()
 	if kind == "green" {
 		s.greenWindow = window
@@ -681,6 +754,9 @@ func mergeOverlaySettings(current OverlaySettings, patch map[string]any) (Overla
 	if updated.Opacity < 0.1 || updated.Opacity > 1 {
 		return OverlaySettings{}, errors.New("窗口透明度需要在 0.1 到 1 之间")
 	}
+	// These overlays are regular windows and must remain coverable by others.
+	// Normalize persisted/imported legacy values as well as runtime updates.
+	updated.AlwaysOnTop = false
 	updated.LaneCount = min(max(updated.LaneCount, 1), 8)
 	return updated, nil
 }
