@@ -1,6 +1,19 @@
 # 阿比整蛊复刻版 · Electron → Wails 迁移方案
 
 > 依据：当前仓库已实现的 Electron 版（`livetool/`）+ 《1比1复刻实现总设计文档-Wails版.md》
+
+## 当前迁移落地状态（2026-09-24）
+
+- 桌面端已切换为 Wails v3 + Go 服务，Vue 3 前端改用生成的 Wails 绑定；Electron 主进程、预加载层、Electron Vite 配置和 npm 根依赖不再作为运行入口。
+- SQLite、规则/动作执行、18 个功能配置、模拟器事件、弹幕记录、OBS WebSocket、配置导入导出、日志和诊断已移入 Go/Wails 服务。直播平台连接保持原版本地模拟器；未实现的平台现在明确拒绝连接，不再误报为已连接。本轮确认原 Electron 连接器本身未实现；Windows amd64 键鼠操作接入真实 `SendInput`，串口操作接入真实端口，查图沿用原版未执行响应。本地开发授权只在非 production 构建中开放。
+- 事件输入通过 1000 条上限的 FIFO 队列，由 4 个消费者并发处理；同类重复事件在 3 秒内去重，队列满时优先保留礼物，排队超过 30 秒则丢弃并累计到 `ConnectorStatus.dropped`。
+- 用户数据目录沿用 Electron `productName`（`阿比整蛊复刻版`），继续使用 `%APPDATA%/阿比整蛊复刻版/data/app.db`，不另开 Wails 专用数据库目录。
+- 卡密校验和签名更新 API 独立放在 `backend/`；桌面前端没有管理员页面，只提供卡密校验、安全码和本机解绑。
+- Wails 更新器已使用嵌入公钥验证发布清单和产物；授权后检查，安装和重启前会询问用户。后端通过 `UPDATE_MANIFEST_FILE` 与 `UPDATE_ARTIFACT_DIR` 提供清单和二进制。
+- 生产构建会把旧设置或导入配置中的 `devMode` 强制归零，且规则调试快捷键增加 production build tag 门禁，避免开发配置遗留后绕开授权入口触发动作。
+- 主窗口和常用卡片布局采用固定浅色主题：白色卡片、浅冷灰工作区、低饱和靛蓝主色，不提供暗黑模式。控制中心合并常用操作并压缩搜索区；卡密、模拟器、功能设置和规则编辑弹窗分别收窄至 380、460、560 和 700px，长表单在内部滚动。叠加窗保留原生标题栏并禁用最小化/最大化；本地媒体由同源资源路由提供并限制在素材目录内。x64 程序已在 Windows 11 ARM64 虚拟机中通过兼容层启动并检查主界面和卡密弹窗；原生 Windows amd64 窗口、OBS 采集、更新安装和真实设备验收仍待目标机完成。
+
+前端 Vue 类型检查、Vite 生产构建、Wails macOS 生产构建、Windows x64 交叉编译和卡密服务 API 冒烟结果记录在 `docs/implementation-evidence.md`。这些检查不代表 Windows 原生窗口、OBS、物理设备或更新替换已在目标机运行通过。
 > 目标：把桌面壳从 Electron 换成 **Wails v3（Go + WebView2）**，前端 Vue 3 与数据/规则逻辑尽量原样搬运，并拿到 Electron 拿不到的能力——**系统原生标题栏 + 窗口级真透明**。
 
 ---
@@ -27,7 +40,7 @@
 | 透明窗口运行时补 `WS_CAPTION` | Chromium 逐像素透明失效，客户区变白 |
 | 普通窗口 + `WS_EX_LAYERED` + 黑色 `LWA_COLORKEY` | 属性生效（`key=#000000 flags=1`）但 Chromium 内容走 DirectComposition 合成，颜色键对内容无效，黑底依旧不透明 |
 
-结论：**要「系统原生标题栏 + 窗口级透明 + 组件不透明」，必须换桌面壳。** Wails 用 Go 直接调 Win32，天然能复刻原版行为。
+结论：Electron 的透明窗口路径无法同时满足原生标题栏和透明客户区，因此迁移到 Wails。Wails 组件窗使用 `BackgroundTypeTransparent` 与 alpha 0 的 WebView2 背景；窗口保持普通带框样式（`Frameless: false`），系统标题栏继续由 Windows 绘制。不要再用 `WS_EX_LAYERED` 黑色色键处理 Chromium 客户区。
 
 ---
 
@@ -97,9 +110,9 @@
 
 ```text
 abi-replica.exe（Go + Wails v3，单进程多窗口）
-├── 主窗口          Frameless: false（保留自绘标题栏），1080×720 起
+├── 主窗口          普通窗口，默认 900×600，最小 760×500
 ├── 绿幕窗口        普通窗口 + 纯色底 #00FF00（OBS 色键）
-├── 组件窗口        普通窗口 + 系统原生标题栏 + 黑底抠像（= 原版 yapp）
+├── 组件窗口        普通窗口 + 系统原生标题栏 + WebView2 透明客户区
 └── 音频窗口        隐藏窗口（或子进程 voice.exe）
         ▲ Wails 绑定（前端 → Go）
         ▼ Wails 事件（Go → 前端）
@@ -116,7 +129,7 @@ abi-replica/
 ├── go.mod
 ├── main.go                 # application.New + 四个窗口
 ├── internal/
-│   ├── windows/            # 窗口管理（含 Win32 抠像）
+│   ├── windows/            # Wails 多窗口管理
 │   ├── rules/              # 规则引擎（移植 rule-engine.ts）
 │   ├── actions/            # 8 类动作执行
 │   ├── danmaku/            # 连接器 + 记录落库
@@ -141,49 +154,27 @@ abi-replica/
 
 | 窗口 | Wails 配置 | 备注 |
 |---|---|---|
-| 主窗 | `Frameless: false`、`MinWidth/MinHeight: 1080×720` | 现有自绘标题栏保留 |
+| 主窗 | `Frameless: false`、`MinWidth/MinHeight: 760×500` | 默认 900×600；保留自绘标题栏 |
 | 绿幕窗 | 普通窗口、`AlwaysOnTop`、不可最小化、底色 `#00FF00` | 与现状一致（色键） |
-| 组件窗 | 普通窗口（**系统原生标题栏**）、不可最小化 | 见下方抠像实现 |
+| 组件窗 | 普通窗口（**系统原生标题栏**）、WebView2 客户区透明 | 使用 Wails `BackgroundTypeTransparent` 与 alpha 0；Windows 11+ 按 Wails 当前支持范围提供透明窗口背景 |
 | 音频窗 | `Hidden: true` | 或独立 `voice.exe` |
 
-组件窗抠像（复刻原版 yapp，Go 直接调 user32）：
+组件窗透明配置：
 
 ```go
-// internal/windows/colorkey_windows.go
-const (
-    GWL_EXSTYLE      = -20
-    WS_EX_LAYERED    = 0x00080000
-    LWA_COLORKEY     = 0x00000001
-)
-
-var (
-    user32                        = windows.NewLazySystemDLL("user32.dll")
-    procGetWindowLongPtrW         = user32.NewProc("GetWindowLongPtrW")
-    procSetWindowLongPtrW         = user32.NewProc("SetWindowLongPtrW")
-    procSetLayeredWindowAttributes = user32.NewProc("SetLayeredWindowAttributes")
-)
-
-// EnableColorKey 让窗口底色（纯黑）整块透明，组件与系统标题栏不受影响。
-func EnableColorKey(hwnd uintptr, key uint32) {
-    ex, _, _ := procGetWindowLongPtrW.Call(hwnd, GWL_EXSTYLE)
-    procSetWindowLongPtrW.Call(hwnd, GWL_EXSTYLE, ex|WS_EX_LAYERED)
-    procSetLayeredWindowAttributes.Call(hwnd, uintptr(key), 0, LWA_COLORKEY)
-}
-
-// DisableColorKey 恢复普通不透明窗口（深色底板模式）。
-func DisableColorKey(hwnd uintptr) {
-    ex, _, _ := procGetWindowLongPtrW.Call(hwnd, GWL_EXSTYLE)
-    procSetWindowLongPtrW.Call(hwnd, GWL_EXSTYLE, ex &^ WS_EX_LAYERED)
+application.WebviewWindowOptions{
+    Frameless:        false, // 保留系统原生标题栏
+    BackgroundType:   application.BackgroundTypeTransparent,
+    BackgroundColour: application.NewRGBA(0, 0, 0, 0),
 }
 ```
 
 前端配合（与当前实现一致）：
 
-- 组件窗页面在**透明底板**模式：`html/body/#app/.slot-overlay` 全部 `background: transparent`，窗口底色（纯黑）整块被抠掉；
-- **深色底板**模式：页面画 `#080d18` 面板，窗口取消抠像；
+- 组件窗始终使用透明 WebView2 背景，`html/body/#app/.slot-overlay` 保持透明；
+- **透明底板**模式只绘制活动组件；**深色底板**模式由页面绘制 `#080d18` 面板；
 - 切换入口：Ctrl+F1 全局热键 或 扩展功能页按钮；
-- 组件内部**避免使用纯黑**（`#000000` 会被一起抠掉），现有配色（`#1d2941`/`#0e1523`/`#111936`）安全；
-- 抠像区域的鼠标事件会穿透到下层窗口（原版同样如此），拖动窗口请用系统标题栏。
+- 不依赖黑色色键，因此组件可使用纯黑；透明像素会透出下层画面，鼠标输入仍交给组件窗，标题栏可用于拖动。
 
 ### 3.2 IPC → Wails 绑定（63 通道映射）
 
@@ -303,11 +294,13 @@ export const api: ElectronApi = {
 
 其余页面、组件、样式、`stores/app.ts`、`router.ts` **全部原样搬运**。
 
-### 3.8 授权：保持自建服务不动
+### 3.8 授权：独立 Node 后端 + Wails 用户客户端
 
-- `server/index.mjs`（Node）继续独立部署，端点与协议不变：`/v1/auth/*`、`/v1/admin/*`、`/health`
-- Go 侧 `internal/license` 实现同样的 HTTP + HMAC 摘要客户端；**不保存管理员密码/卡密明文**，令牌只放内存
-- 现有「本地开发模式」（未打包时可用）保留
+- 原授权服务迁至 `backend/` 独立项目部署，保留 `/v1/auth/*`、`/v1/admin/*`、`/health` 协议，并提供签名更新的 `/v1/updates/*` 接口
+- Go 侧实现用户授权 HTTP 客户端；**桌面端不打包管理员密码、卡密 pepper 或管理员 API 页面**，会话令牌只放内存
+- 桌面端只负责卡密登录与用户自身的安全码/设备解绑，验证窗只输入卡密；发行构建通过 `LIVETOOL_LICENSE_SERVER_URL` 固定授权服务 HTTPS 地址。真实域名待部署配置，正式发行构建需在设置该变量后执行
+- 发卡、状态管理、设备重置、审计由独立服务管理员 API 负责
+- 现有「本地开发模式」（仅非 production 构建）保留；正式版必须验证远端卡密
 
 ### 3.9 日志、诊断、配置导入导出
 
@@ -319,7 +312,8 @@ export const api: ElectronApi = {
 
 - `wails build -platform windows/amd64` → 单 exe（无 Chromium 分发，体积远小于 Electron）
 - 资源目录沿用：`resources/`（素材）、`水果机/`、`videos/`、`voices/`、`images/`
-- 安装器：NSIS / Inno Setup；保留「禁止最小化」窗口标题便于 OBS 采集
+- 安装器：`wails3 task windows:package` 生成 Windows amd64 exe 与 NSIS 用户级安装包；安装器按需设置 WebView2 Evergreen Runtime，卸载保留 `%APPDATA%/阿比整蛊复刻版` 用户数据
+- 绿幕和组件 Overlay 窗标题保留「禁止最小化」提示，且禁用系统最小化/最大化按钮，方便 OBS 按标题选择窗口
 
 ---
 
@@ -329,7 +323,7 @@ export const api: ElectronApi = {
 |---|---|---|
 | A. 骨架 | `wails init` + 前端搬入 + 主窗跑通 | 主界面与现在一致，能开 DevTools |
 | B. 数据 | SQLite + 设置 + 规则 CRUD + 规则引擎 + 自检 | `go test ./internal/rules` 全绿；规则可增删改查 |
-| C. 窗口 | 绿幕/组件/音频窗 + 消息协议 + **组件窗抠像** | 组件窗：系统标题栏 + 黑底抠像 + 组件不透明；OBS 采集勾「允许透明度」只剩组件 |
+| C. 窗口 | 绿幕/组件/音频窗 + 消息协议 + **组件窗透明背景** | Windows 目标机：标题栏仍在、空白客户区显示下层内容、活动组件不透明；OBS 窗口采集打开透明度后只剩组件 |
 | D. 动作 | 键鼠、音频、砸落物、水果机、串口、OBS | 记事本验证按键；OBS 验证滤镜/虚拟摄像头；串口回环 |
 | E. 授权与发布 | 自建授权客户端 + 卡密后台 + 打包 | 卡密登录/绑定/解绑；安装包可在干净机器运行 |
 
@@ -339,7 +333,7 @@ export const api: ElectronApi = {
 
 | 处理 | 对象 |
 |---|---|
-| **直接复用** | `src/renderer/**`（页面、组件、样式、store、router）、`src/shared/types.ts`、`src/shared/features.ts`、`server/**`、`resources/**`、配置 JSON 结构 |
+| **直接复用** | `src/renderer/**`（页面、组件、样式、store、router）、`src/shared/types.ts`、`src/shared/features.ts`、原授权服务协议（实现迁至 `backend/` 并增加签名更新接口）、`resources/**`、配置 JSON 结构 |
 | **重写** | `src/main/**`（→ Go）、`src/preload/**`（删除，改绑定）、`electron.vite.config.ts`（→ `wails.json`）、打包配置 |
 | **删除** | electron / electron-builder / electron-vite / sql.js / koffi（若之前引入）相关依赖 |
 | **保留思路** | `scripts/self-check.ts` 的用例 → Go 单测 |
@@ -351,27 +345,30 @@ export const api: ElectronApi = {
 | 风险 | 验证 / 缓解 |
 |---|---|
 | Wails v3 处于 Beta，绑定路径与 `WebviewWindowOptions` 可能微调 | 锁定版本；绑定层集中在 `services/api.ts` 一处，便于跟进改动 |
-| 抠像副作用：纯黑像素一起透明、抠像区域鼠标穿透 | 组件配色避开 `#000000`；交互元素不做纯黑；拖动改用系统标题栏 |
+| Wails/WebView2 的透明背景受 Windows 版本与窗口样式影响；透明区域输入仍由组件窗接收 | 锁定 Wails 版本；在目标 Windows 版本检查原生标题栏、客户区透明、组件绘制和 OBS alpha；保持 `IgnoreMouseEvents: false` |
 | WebView2 与 BASS 音频冲突 | 先同进程（`oto`/`beep`），有冲突再拆 `voice.exe` 子进程 |
 | 键鼠需要管理员权限（目标程序提权时） | `input` 拆独立子进程，按需以管理员启动 |
 | 多窗口 DevTools / 高 DPI | `wails dev` 逐窗口验证；DPI 用 PerMonitorV2 |
 | 现有数据迁移 | `app.db` 直接读；必要时写一次性迁移命令 |
 
-验证抠像是否生效（Windows 侧）：
+验证组件窗透明是否生效（Windows 侧）：
 
 ```powershell
 # 1) 窗口样式
-#    期望：WS_CAPTION=True（原生标题栏）、WS_EX_LAYERED=True、key=#000000、flags=1(LWA_COLORKEY)
-# 2) 屏幕取色：窗口空白处应看到下层窗口/桌面内容，组件区域仍是组件自身颜色
-# 3) OBS：窗口采集 → 采集方式「Windows 10 (1903 and up)」→ 勾「允许透明度」→ 只剩组件
+#    期望：WS_CAPTION=True（原生标题栏）、Frameless=False；不设置 WS_EX_LAYERED 黑色色键
+# 2) 屏幕观察：窗口空白客户区显示下层窗口/桌面内容，组件区域仍是组件自身颜色
+# 3) 切换底板：Ctrl+F1 在透明背景和页面绘制的深色面板之间切换
+# 4) OBS：窗口采集勾选「允许透明度」后应只看到活动组件
 ```
 
 ---
 
 ## 7. 验收清单（对齐 Wails 版设计文档 §20）
 
+以下项目保持未勾选，直到原生 Windows amd64 目标机完成可视界面、窗口、OBS、更新安装和设备行为验收。Windows ARM64 虚拟机的兼容层冒烟不替代该验收；构建或静态检查也不能代替运行验收。细分验证证据见 `docs/implementation-evidence.md`。
+
 - [ ] 主窗、绿幕窗、组件窗、音频窗行为与 Electron 版一致
-- [ ] 组件窗：**系统原生标题栏** + 窗口级透明 + 活动组件不透明（Ctrl+F1 切底板）
+- [ ] 组件窗：**系统原生标题栏** + WebView2 透明客户区 + 活动组件不透明（Ctrl+F1 切底板）
 - [ ] 绿幕窗：纯绿底、色键后只剩特效；多路视频可同时播
 - [ ] 事件闭环：模拟事件 → 规则匹配 → 视频/音频/砸图/水果机/键鼠动作
 - [ ] 弹幕日记：实时 + 历史检索 + 导出 + 清理

@@ -1,0 +1,12 @@
+{
+  "name": "livetool-license-update-service",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Standalone license and signed application update service for LiveTool",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node index.mjs",
+    "dev": "node --watch index.mjs"
+  }
+}

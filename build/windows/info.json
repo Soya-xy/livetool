@@ -1,0 +1,15 @@
+{
+	"fixed": {
+		"file_version": "0.2.0"
+	},
+	"info": {
+		"0000": {
+			"ProductVersion": "0.2.0",
+			"CompanyName": "阿比直播工具",
+			"FileDescription": "直播互动控制台",
+			"LegalCopyright": "© 2026 阿比直播工具",
+			"ProductName": "阿比直播工具",
+			"Comments": "阿比直播互动控制台"
+		}
+	}
+}

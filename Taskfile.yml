@@ -1,0 +1,83 @@
+version: '3'
+
+vars:
+  APP_NAME: livetool
+  VERSION: 0.2.0
+  TARGET_OS: '{{.GOOS | default .OS}}'
+  EXE_EXT: '{{if eq .TARGET_OS "windows"}}.exe{{end}}'
+  WINDOWS_GUI_FLAG: '{{if eq .TARGET_OS "windows"}}-H=windowsgui{{end}}'
+  LICENSE_SERVER_URL: '{{env "LIVETOOL_LICENSE_SERVER_URL"}}'
+
+tasks:
+  bindings:
+    desc: Generate Wails TypeScript bindings
+    cmds:
+      - go run github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.25 generate bindings -ts -i -d frontend/bindings
+
+  frontend:install:
+    dir: frontend
+    cmds:
+      - npm ci
+
+  frontend:dev:
+    dir: frontend
+    cmds:
+      - npm run dev -- --host 127.0.0.1
+
+  frontend:build:
+    dir: frontend
+    cmds:
+      - npm run build
+
+  build:
+    preconditions:
+      - sh: test -n "{{.LICENSE_SERVER_URL}}"
+        msg: Set LIVETOOL_LICENSE_SERVER_URL to the deployed HTTPS license service before making a production build.
+      - sh: case "{{.LICENSE_SERVER_URL}}" in https://*) exit 0 ;; *) exit 1 ;; esac
+        msg: LIVETOOL_LICENSE_SERVER_URL must use HTTPS.
+    cmds:
+      - task: bindings
+      - task: frontend:build
+      - go build -tags production -trimpath -buildvcs=false -ldflags="-s -w {{.WINDOWS_GUI_FLAG}} -X main.Version={{.VERSION}} -X main.LicenseServerURL={{.LICENSE_SERVER_URL}}" -o bin/{{.APP_NAME}}{{.EXE_EXT}} .
+
+  windows:build:
+    desc: Build the production Windows amd64 desktop executable
+    preconditions:
+      - sh: test -n "{{.LICENSE_SERVER_URL}}"
+        msg: Set LIVETOOL_LICENSE_SERVER_URL to the deployed HTTPS license service before making a production build.
+      - sh: case "{{.LICENSE_SERVER_URL}}" in https://*) exit 0 ;; *) exit 1 ;; esac
+        msg: LIVETOOL_LICENSE_SERVER_URL must use HTTPS.
+    cmds:
+      - task: bindings
+      - task: frontend:build
+      - go run github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.25 generate syso -arch amd64 -icon build/windows/icon.ico -manifest build/windows/wails.exe.manifest -info build/windows/info.json -out wails_windows_amd64.syso
+      - GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -tags production -trimpath -buildvcs=false -ldflags="-s -w -H=windowsgui -X main.Version={{.VERSION}} -X main.LicenseServerURL={{.LICENSE_SERVER_URL}}" -o bin/{{.APP_NAME}}.exe .
+
+  windows:package:
+    desc: Build a Windows amd64 executable and its NSIS installer
+    preconditions:
+      - sh: command -v makensis >/dev/null 2>&1
+        msg: Install NSIS (makensis) to create the Windows installer.
+    cmds:
+      - task: windows:build
+      - go run github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.25 generate webview2bootstrapper --dir build/windows/nsis
+      - task: windows:installer
+
+  windows:installer:
+    internal: true
+    dir: build/windows/nsis
+    preconditions:
+      - sh: test -f ../../../bin/livetool.exe
+        msg: Build bin/livetool.exe before compiling the NSIS installer.
+      - sh: command -v makensis >/dev/null 2>&1
+        msg: Install NSIS (makensis) to create the Windows installer.
+    cmds:
+      - makensis -DINFO_PRODUCTVERSION={{.VERSION}} -DARG_WAILS_AMD64_BINARY=../../../bin/livetool.exe project.nsi
+
+  run:
+    cmds:
+      - go run .
+
+  dev:
+    cmds:
+      - go run github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.25 dev --config ./build/config.yml --port 9245
