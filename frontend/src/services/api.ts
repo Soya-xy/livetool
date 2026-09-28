@@ -21,7 +21,13 @@ export const api: LiveToolApi = {
     save: (rule) => result(Backend.RulesSave(rule as unknown as Models.Rule)),
     remove: (id) => result(Backend.RulesRemove(id)),
     clear: () => result(Backend.RulesClear()),
-    clone: (id) => result(Backend.RulesClone(id)),
+    clone: (id, count = 1) => result(Backend.RulesClone(id, count)),
+    setPinned: (id, pinned) => result(Backend.RulesSetPinned(id, pinned)),
+    trigger: (id) => result(Backend.RulesTrigger(id)),
+    runtimeState: () => result(Backend.RulesRuntimeState()),
+    setEnabled: (enabled) => result(Backend.RulesSetEnabled(enabled)),
+    setPaused: (paused) => result(Backend.RulesSetPaused(paused)),
+    onState: (callback) => subscribe('rules:state', callback),
   },
   danmaku: {
     query: (filter) => result(Backend.DanmakuQuery(filter as Models.DanmakuFilter)),
@@ -51,6 +57,8 @@ export const api: LiveToolApi = {
     widget: (payload) => result(Backend.OverlayWidget(payload as unknown as Models.OverlayWidgetPayload)),
     removeWidget: (featureId) => result(Backend.OverlayRemoveWidget(featureId as unknown as Models.FeatureID)),
     decrementScreenLock: () => result(Backend.OverlayDecrementScreenLock()),
+    widgetLayouts: () => result(Backend.OverlayWidgetLayouts()),
+    saveWidgetLayout: (featureId, layout) => result(Backend.OverlaySaveWidgetLayout(featureId, layout)),
     onMessage: (callback) => subscribe('overlay:message', callback),
     onStatus: (callback) => subscribe('overlay:status', callback),
   },
@@ -79,8 +87,9 @@ export const api: LiveToolApi = {
   features: {
     test: (id) => result(Backend.FeatureTest(id as unknown as Models.FeatureID)),
     show: (id) => result(Backend.FeatureShow(id as unknown as Models.FeatureID)),
-    increment: (id, key, amount) => result(Backend.FeatureIncrement(id as unknown as Models.FeatureID, key, amount)),
     selectLockMedia: () => result(Backend.FeatureSelectLockMedia()),
+    menuGift: (giftName) => result(Backend.FeatureMenuGift(giftName)),
+    giftIcon: (name) => result(Backend.FeatureGiftIcon(name)),
   },
   auth: {
     status: () => result(Backend.AuthStatus()),
@@ -97,6 +106,7 @@ export const api: LiveToolApi = {
   diagnostics: {
     logs: (limit) => result(Backend.DiagnosticsLogs(limit ?? 100)),
     assets: () => result(Backend.DiagnosticsAssets()),
+    importAsset: (kind) => result(Backend.ImportAsset(kind)),
     settings: () => result(Backend.DiagnosticsSettings()),
     saveSettings: (settings) => result(Backend.DiagnosticsSaveSettings(settings)),
     onLog: (callback) => subscribe('log:append', callback),

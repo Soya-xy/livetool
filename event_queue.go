@@ -10,6 +10,11 @@ const (
 	eventQueueLimit  = 1000
 	eventWorkerCount = 4
 	eventMaxAge      = 30 * time.Second
+	// eventDedupeWindow collapses duplicate deliveries of the same message.
+	eventDedupeWindow = 3000
+	// giftGroupWindowMS is the 禁用组刷 merge window: one burst of the same gift
+	// from the same user only runs the actions once.
+	giftGroupWindowMS = 1200
 )
 
 type queuedLiveEvent struct {
@@ -43,13 +48,29 @@ func (s *AppService) enqueueEvent(event LiveEvent) bool {
 		s.eventMu.Unlock()
 		return false
 	}
-
-	key := eventDedupeKey(event)
-	if previous, exists := s.eventDedupe[key]; exists && event.Timestamp-previous < 3000 {
+	if s.eventsArePaused() {
+		// 暂停/继续 (Ctrl + F12): paused events never enter the queue.
 		s.eventMu.Unlock()
+		s.addDroppedEvents(1)
 		return false
 	}
-	s.eventDedupe[key] = event.Timestamp
+
+	// 禁用组刷 (off by default): gifts are never merged, so a group of N gifts runs
+	// the actions N times. Turning it on collapses one burst of the same gift from
+	// the same user into a single run.
+	settings := s.settingSnapshot()
+	mergeGifts := event.Kind != KindGift || settings.IsDisableGiftGroup
+	key, window := eventDedupeKey(event), int64(eventDedupeWindow)
+	if event.Kind == KindGift && settings.IsDisableGiftGroup {
+		key, window = giftGroupKey(event), giftGroupWindowMS
+	}
+	if mergeGifts {
+		if previous, exists := s.eventDedupe[key]; exists && event.Timestamp-previous < window {
+			s.eventMu.Unlock()
+			return false
+		}
+		s.eventDedupe[key] = event.Timestamp
+	}
 	for key, timestamp := range s.eventDedupe {
 		if event.Timestamp-timestamp > 30_000 {
 			delete(s.eventDedupe, key)
@@ -143,6 +164,25 @@ func (s *AppService) stopEventWorkers() {
 }
 
 func eventDedupeKey(event LiveEvent) string {
+	user, gift := eventIdentity(event)
+	return strings.Join([]string{
+		event.Source,
+		user,
+		string(event.Kind),
+		gift,
+		event.Text,
+		fmt.Sprint(event.Timestamp / 1000),
+	}, "|")
+}
+
+// giftGroupKey ignores the timestamp so a burst of the same gift collapses into
+// one action run while 禁用组刷 is on.
+func giftGroupKey(event LiveEvent) string {
+	user, gift := eventIdentity(event)
+	return strings.Join([]string{"gift-group", event.Source, user, gift}, "|")
+}
+
+func eventIdentity(event LiveEvent) (string, string) {
 	user := ""
 	if event.User != nil {
 		user = event.User.ID
@@ -154,12 +194,5 @@ func eventDedupeKey(event LiveEvent) string {
 	if event.Gift != nil {
 		gift = event.Gift.Name
 	}
-	return strings.Join([]string{
-		event.Source,
-		user,
-		string(event.Kind),
-		gift,
-		event.Text,
-		fmt.Sprint(event.Timestamp / 1000),
-	}, "|")
+	return user, gift
 }

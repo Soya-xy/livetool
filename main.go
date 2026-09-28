@@ -26,7 +26,7 @@ func main() {
 	}
 	// Keep Electron's productName-based userData directory so the existing
 	// data/app.db, logs and configs remain available after the Wails migration.
-	appDir := filepath.Join(configDir, "阿比整蛊复刻版")
+	appDir := filepath.Join(configDir, "AKA直播复刻版")
 	for _, dir := range []string{filepath.Join(appDir, "data"), filepath.Join(appDir, "logs"), filepath.Join(appDir, "assets")} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			log.Fatal(err)
@@ -48,7 +48,7 @@ func main() {
 		log.Fatal(err)
 	}
 	app := application.New(application.Options{
-		Name:        "阿比直播工具",
+		Name:        "AKA直播",
 		Description: "直播互动控制台",
 		Services:    []application.Service{application.NewService(service)},
 		Assets:      application.AssetOptions{Handler: newAssetHandler(assets, service)},
@@ -60,7 +60,7 @@ func main() {
 		log.Fatal(err)
 	}
 	mainWindow := app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Name: "main", Title: "阿比直播工具", URL: "/#/control",
+		Name: "main", Title: "AKA直播", URL: "/#/control",
 		Width: 900, Height: 600, MinWidth: 760, MinHeight: 500,
 		BackgroundType:     application.BackgroundTypeSolid,
 		BackgroundColour:   application.NewRGBA(244, 246, 249, 255),

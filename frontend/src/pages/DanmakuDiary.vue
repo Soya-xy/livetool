@@ -108,7 +108,7 @@ function resultType(result: ActionResult): 'success' | 'warning' | 'danger' | 'i
             <div class="filter-line">
               <el-input v-model="liveKeyword" clearable placeholder="搜索昵称 / 内容" class="diary-search"><template #prefix><el-icon><Search /></el-icon></template></el-input>
               <el-select v-model="liveKind" clearable placeholder="事件类型" class="filter-select"><el-option label="礼物" value="gift" /><el-option label="弹幕" value="chat" /><el-option label="点赞" value="like" /><el-option label="关注" value="follow" /></el-select>
-              <el-select v-model="liveSource" clearable placeholder="平台" class="filter-select"><el-option label="模拟器" value="simulator" /><el-option label="抖音" value="douyin" /><el-option label="B站" value="bilibili" /></el-select>
+              <el-select v-model="liveSource" clearable placeholder="平台" class="filter-select"><el-option label="模拟器" value="simulator" /><el-option label="抖音" value="douyin" /><el-option label="快手" value="kuaishou" /><el-option label="视频号" value="shipinhao" /><el-option label="B站" value="bilibili" /><el-option label="TIKTOK" value="tiktok" /><el-option label="斗鱼" value="douyu" /><el-option label="小红书" value="xiaohongshu" /></el-select>
             </div>
             <div class="filter-actions">
               <el-switch v-model="autoScroll" active-text="自动滚动" />
@@ -135,7 +135,7 @@ function resultType(result: ActionResult): 'success' | 'warning' | 'danger' | 'i
             <el-date-picker v-model="historyRange" type="datetimerange" range-separator="至" start-placeholder="开始时间" end-placeholder="结束时间" clearable />
             <el-input v-model="filters.userName" clearable placeholder="昵称" />
             <el-input v-model="filters.keyword" clearable placeholder="关键词" />
-            <el-select v-model="filters.source" clearable placeholder="平台"><el-option label="模拟器" value="simulator" /><el-option label="抖音" value="douyin" /><el-option label="B站" value="bilibili" /></el-select>
+            <el-select v-model="filters.source" clearable placeholder="平台"><el-option label="模拟器" value="simulator" /><el-option label="抖音" value="douyin" /><el-option label="快手" value="kuaishou" /><el-option label="视频号" value="shipinhao" /><el-option label="B站" value="bilibili" /><el-option label="TIKTOK" value="tiktok" /><el-option label="斗鱼" value="douyu" /><el-option label="小红书" value="xiaohongshu" /></el-select>
             <el-select v-model="filters.kind" clearable placeholder="类型"><el-option label="礼物" value="gift" /><el-option label="弹幕" value="chat" /><el-option label="点赞" value="like" /><el-option label="关注" value="follow" /></el-select>
             <el-select v-model="filters.matched" clearable placeholder="命中规则"><el-option label="已命中" value="yes" /><el-option label="未命中" value="no" /></el-select>
             <el-button type="primary" @click="applyHistoryFilters"><el-icon><Search /></el-icon>查询</el-button>

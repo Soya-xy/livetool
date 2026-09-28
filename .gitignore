@@ -14,3 +14,5 @@ build/windows/nsis/MicrosoftEdgeWebview2Setup.exe
 backend/license-data/
 backend/.env
 backend/private/
+# 打包脚本产出的 zip（bin/ 已忽略）
+dist/

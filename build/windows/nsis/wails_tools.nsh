@@ -8,10 +8,10 @@
     !define INFO_PROJECTNAME "livetool"
 !endif
 !ifndef INFO_COMPANYNAME
-    !define INFO_COMPANYNAME "阿比直播工具"
+    !define INFO_COMPANYNAME "AKA直播"
 !endif
 !ifndef INFO_PRODUCTNAME
-    !define INFO_PRODUCTNAME "阿比直播工具"
+    !define INFO_PRODUCTNAME "AKA直播"
 !endif
 !ifndef INFO_PRODUCTVERSION
     !define INFO_PRODUCTVERSION "0.2.0"

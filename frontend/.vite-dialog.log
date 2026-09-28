@@ -1,0 +1,10 @@
+
+> livetool-frontend@0.2.0 dev
+> vite --host 127.0.0.1 --port 5199
+
+
+  VITE v7.3.6  ready in 503 ms
+
+  ➜  Local:   http://127.0.0.1:5199/
+  ➜  press h + enter to show help
+22:57:35 [vite] (client) ✨ optimized dependencies changed. reloading

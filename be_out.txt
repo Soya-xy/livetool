@@ -1,0 +1,22 @@
+﻿lines 363
+//go:build windows
+var (
+const (
+func platformRunBuiltinEvent(eventID string, action Action, timeout int) error {
+func runShutdownTool(args ...string) error {
+func suspendComputer() error {
+func lockWorkstation() error {
+func minimizeForegroundWindow() error {
+func runExecutable(path string) error {
+func quitCrossFireRoom() error {
+func pressAltF4() {
+const (
+type processEntry32 struct {
+func killProcessByName(name string) error {
+type keyLockState struct {
+var (
+type kbdllHookStruct struct {
+func keyLockProc(code int32, wparam uintptr, lparam unsafe.Pointer) uintptr {
+func holdKeyLock(blocked []uint16, autoPress uint16, timeout int) error {
+func runKeyLockLoop(state *keyLockState, ready chan<- error) {
+func releaseKeyLock(state *keyLockState) {

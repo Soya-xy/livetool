@@ -55,6 +55,11 @@ type AppService struct {
 	ruleNextAllowed map[string]int64
 	ruleActive      map[string]int
 	ruleLocks       map[string]*sync.Mutex
+	ruleTriggerLast map[string]int64
+	ruleHotkeys     []string
+	orderMu         sync.Mutex
+	rulesEnabled    bool
+	eventsPaused    bool
 	eventMu         sync.Mutex
 	eventCond       *sync.Cond
 	eventQueue      []queuedLiveEvent
@@ -66,7 +71,15 @@ type AppService struct {
 	serialMu        sync.Mutex
 	serialPulses    map[*serialPulseRun]struct{}
 	serialPortLocks map[string]*sync.Mutex
-	closing         bool
+	connMu          sync.Mutex
+	connector       *connectorRun
+	// screenLockKeyOn 记录锁链的全局空格键观察器是否已生效。
+	screenLockKeyMu sync.Mutex
+	screenLockKeyOn bool
+	// giftIcons 是「礼物名称 → 图标地址」表，由平台连接器在拉到礼物表后写入。
+	giftIconMu sync.Mutex
+	giftIcons  map[string]string
+	closing    bool
 }
 
 type AuthLoginPayload struct {
@@ -91,6 +104,7 @@ func NewAppService(store *Store, appDir, version string) (*AppService, error) {
 		overlayModes:    map[string]string{"green": "green", "slot": "landscape-16-9"},
 		featureCooldown: map[FeatureID]int64{}, widgetIDs: map[FeatureID]string{},
 		ruleNextAllowed: map[string]int64{}, ruleActive: map[string]int{}, ruleLocks: map[string]*sync.Mutex{},
+		ruleTriggerLast: map[string]int64{}, rulesEnabled: true,
 		connection: ConnectorStatus{Platform: string(PlatformSimulator), State: "disconnected", Mode: "simulator"},
 		auth:       LicenseAuthStatus{LoggedIn: false, Mode: "remote", Platform: string(PlatformSimulator), Features: []string{}},
 	}
@@ -102,6 +116,10 @@ func NewAppService(store *Store, appDir, version string) (*AppService, error) {
 		return nil, fmt.Errorf("load settings: %w", err)
 	}
 	s.settings = mergeAppSettings(s.settings, version, s.assetsRoot)
+	// 绿幕窗口与组件窗口不跨进程保留：每次启动都把它们置为「关闭」，
+	// 免得上一轮运行时（播放视频、输出组件会自动打开窗口）留下来的打开状态
+	// 被当成“窗口还开着”，让扩展页与设置页显示成已打开。
+	s.resetOverlayWindows()
 	if err := store.GetSetting(context.Background(), "authorizationInstallId", "", &s.installID); err != nil {
 		return nil, fmt.Errorf("load installation id: %w", err)
 	}
@@ -145,12 +163,247 @@ func (s *AppService) setMainWindow(window *application.WebviewWindow) {
 	for i := 1; i <= 9; i++ {
 		index := i - 1
 		shortcut := fmt.Sprintf("CmdOrCtrl+Shift+%d", i)
-		if s.settings.DevMode && localDevelopmentModeAllowed() {
+		if s.debugKeysActive() {
 			if err := s.app.GlobalShortcut.Register(shortcut, func() { s.debugRuleByIndex(index) }); err != nil {
 				s.log("warn", "hotkey", "无法注册规则调试快捷键", shortcut+": "+err.Error())
 			}
 		}
 	}
+	// 开启/停止 and 暂停/继续 are fixed hotkeys in 通用设置 and cannot be edited.
+	if err := s.app.GlobalShortcut.Register(rulesToggleAccelerator, func() { s.toggleRulesEnabled() }); err != nil {
+		s.log("warn", "hotkey", "无法注册开启/停止快捷键", rulesToggleAccelerator+": "+err.Error())
+	}
+	if err := s.app.GlobalShortcut.Register(rulesPauseAccelerator, func() { s.toggleEventsPaused() }); err != nil {
+		s.log("warn", "hotkey", "无法注册暂停/继续快捷键", rulesPauseAccelerator+": "+err.Error())
+	}
+	s.applyRuleHotkeys()
+}
+
+// Fixed 通用设置 hotkeys. The labels are what the settings page shows; the
+// accelerators are what Wails registers.
+const (
+	rulesToggleAccelerator = "CmdOrCtrl+0"
+	rulesToggleKeyLabel    = "Ctrl + 0"
+	rulesPauseAccelerator  = "CmdOrCtrl+F12"
+	rulesPauseKeyLabel     = "Ctrl + F12"
+	overlayToggleKeyLabel  = "Ctrl + F1"
+)
+
+func (s *AppService) debugKeysActive() bool {
+	return s.settingSnapshot().DevMode && localDevelopmentModeAllowed()
+}
+
+func (s *AppService) rulesEngineEnabled() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.rulesEnabled
+}
+
+func (s *AppService) eventsArePaused() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.eventsPaused
+}
+
+func (s *AppService) toggleRulesEnabled() {
+	s.RulesSetEnabled(!s.rulesEngineEnabled())
+}
+func (s *AppService) toggleEventsPaused() {
+	s.RulesSetPaused(!s.eventsArePaused())
+}
+
+// RulesRuntimeState reports the footer switch of the control centre.
+func (s *AppService) RulesRuntimeState() RulesRuntimeState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return RulesRuntimeState{Enabled: s.rulesEnabled, Paused: s.eventsPaused, DebugKeys: s.debugKeysActive(), OpenKey: rulesToggleKeyLabel, CloseKey: rulesPauseKeyLabel}
+}
+
+// RulesSetEnabled is the global 开启/停止 switch: events keep being recorded but
+// no rule or feature action runs while it is off.
+func (s *AppService) RulesSetEnabled(enabled bool) RulesRuntimeState {
+	s.mu.Lock()
+	s.rulesEnabled = enabled
+	s.mu.Unlock()
+	if enabled {
+		s.log("info", "rules", "规则引擎已开启", "")
+	} else {
+		s.log("warn", "rules", "规则引擎已停止", "事件仍会记录，但不会执行任何动作")
+	}
+	return s.emitRulesState()
+}
+
+// RulesSetPaused is the 暂停/继续 switch: paused events never enter the queue.
+func (s *AppService) RulesSetPaused(paused bool) RulesRuntimeState {
+	s.mu.Lock()
+	s.eventsPaused = paused
+	s.mu.Unlock()
+	if paused {
+		s.log("warn", "rules", "事件处理已暂停", "暂停期间新事件不会入队")
+	} else {
+		s.log("info", "rules", "事件处理已继续", "")
+	}
+	return s.emitRulesState()
+}
+
+func (s *AppService) emitRulesState() RulesRuntimeState {
+	state := s.RulesRuntimeState()
+	s.emit("rules:state", state)
+	return state
+}
+
+// applyRuleHotkeys re-registers every rule that binds a hotkey. Rules without a
+// hotkey are simply skipped.
+func (s *AppService) applyRuleHotkeys() {
+	if s.app == nil {
+		return
+	}
+	for _, accelerator := range s.ruleHotkeys {
+		if err := s.app.GlobalShortcut.Unregister(accelerator); err != nil {
+			s.log("warn", "hotkey", "无法解除玩法热键", accelerator+": "+err.Error())
+		}
+	}
+	s.ruleHotkeys = nil
+	rules, err := s.store.ListRules(context.Background())
+	if err != nil {
+		s.log("warn", "hotkey", "读取玩法热键失败", err.Error())
+		return
+	}
+	for _, rule := range rules {
+		accelerator, err := ruleHotkeyAccelerator(rule.Hotkey)
+		if err != nil {
+			if strings.TrimSpace(rule.Hotkey) != "" {
+				s.log("warn", "hotkey", "玩法热键无效", rule.Name+": "+err.Error())
+			}
+			continue
+		}
+		ruleID := rule.ID
+		if err := s.app.GlobalShortcut.Register(accelerator, func() { s.triggerRuleByHotkey(ruleID) }); err != nil {
+			s.log("warn", "hotkey", "无法注册玩法热键", rule.Name+": "+err.Error())
+			continue
+		}
+		s.ruleHotkeys = append(s.ruleHotkeys, accelerator)
+	}
+}
+
+func (s *AppService) triggerRuleByHotkey(id string) {
+	result := s.RulesTrigger(id)
+	if !result.OK {
+		s.log("warn", "hotkey", "玩法热键触发失败", result.Message)
+	}
+}
+
+// ruleHotkeyAccelerator converts the recorder format ("Ctrl + Shift + F") into a
+// Wails accelerator. Only the keys Wails can register are accepted: A-Z, 0-9
+// and F1-F12, optionally combined with Shift / Ctrl / Alt.
+func ruleHotkeyAccelerator(hotkey string) (string, error) {
+	hotkey = strings.TrimSpace(hotkey)
+	if hotkey == "" {
+		return "", nil
+	}
+	parts := strings.Split(hotkey, "+")
+	modifiers := make([]string, 0, 3)
+	key := ""
+	seen := map[string]bool{}
+	for _, part := range parts {
+		item := strings.TrimSpace(part)
+		if item == "" {
+			return "", errors.New("热键格式无效")
+		}
+		switch strings.ToLower(item) {
+		case "ctrl", "control":
+			if !seen["ctrl"] {
+				seen["ctrl"] = true
+				modifiers = append(modifiers, "CmdOrCtrl")
+			}
+		case "shift":
+			if !seen["shift"] {
+				seen["shift"] = true
+				modifiers = append(modifiers, "Shift")
+			}
+		case "alt":
+			if !seen["alt"] {
+				seen["alt"] = true
+				modifiers = append(modifiers, "Alt")
+			}
+		default:
+			if key != "" {
+				return "", errors.New("热键只能包含一个主键")
+			}
+			upper := strings.ToUpper(item)
+			switch {
+			case len(upper) == 1 && (upper[0] >= 'A' && upper[0] <= 'Z' || upper[0] >= '0' && upper[0] <= '9'):
+			case strings.HasPrefix(upper, "F") && isNumeric(upper[1:]) && len(upper) <= 3:
+				if number := atoiSafe(upper[1:]); number < 1 || number > 12 {
+					return "", errors.New("只支持 F1 到 F12")
+				}
+			default:
+				return "", fmt.Errorf("不支持的按键：%s", item)
+			}
+			key = upper
+		}
+	}
+	if key == "" {
+		return "", errors.New("热键需要包含一个主键（字母、数字或 F1-F12）")
+	}
+	if len(modifiers) == 0 {
+		return "", errors.New("热键至少需要一个修饰键（Ctrl / Shift / Alt）")
+	}
+	return strings.Join(append(modifiers, key), "+"), nil
+}
+
+func isNumeric(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, char := range value {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func atoiSafe(value string) int {
+	number := 0
+	for _, char := range value {
+		number = number*10 + int(char-'0')
+	}
+	return number
+}
+
+// validateRuleHotkey rejects hotkeys that are reserved or already bound.
+func (s *AppService) validateRuleHotkey(rule Rule) error {
+	if strings.TrimSpace(rule.Hotkey) == "" {
+		return nil
+	}
+	accelerator, err := ruleHotkeyAccelerator(rule.Hotkey)
+	if err != nil {
+		return err
+	}
+	switch accelerator {
+	case "CmdOrCtrl+F1":
+		return fmt.Errorf("热键 %s 已被组件窗底板切换占用", overlayToggleKeyLabel)
+	case rulesToggleAccelerator:
+		return fmt.Errorf("热键 %s 已被开启/停止占用", rulesToggleKeyLabel)
+	case rulesPauseAccelerator:
+		return fmt.Errorf("热键 %s 已被暂停/继续占用", rulesPauseKeyLabel)
+	}
+	rules, err := s.store.ListRules(context.Background())
+	if err != nil {
+		return err
+	}
+	for _, other := range rules {
+		if other.ID == rule.ID {
+			continue
+		}
+		otherAccelerator, err := ruleHotkeyAccelerator(other.Hotkey)
+		if err != nil || otherAccelerator != accelerator {
+			continue
+		}
+		return fmt.Errorf("热键已被「%s」占用", other.Name)
+	}
+	return nil
 }
 
 func (s *AppService) shutdown() {
@@ -161,7 +414,9 @@ func (s *AppService) shutdown() {
 	}
 	s.closing = true
 	s.mu.Unlock()
+	s.stopConnector()
 	s.stopEventWorkers()
+	stopScreenLockKeyObserver()
 	s.app.GlobalShortcut.UnregisterAll()
 	s.SerialStopAll()
 	s.obs.Disconnect()
@@ -190,28 +445,115 @@ func (s *AppService) RulesSave(rule Rule) (Rule, error) {
 	if rule.Actions == nil {
 		rule.Actions = []Action{}
 	}
+	rule.Hotkey = strings.TrimSpace(rule.Hotkey)
+	if err := s.validateRuleHotkey(rule); err != nil {
+		return Rule{}, err
+	}
 	saved, err := s.store.SaveRule(context.Background(), rule)
 	if err == nil {
 		s.log("info", "rules", "已保存规则", saved.Name)
+		s.applyRuleHotkeys()
 	}
 	return saved, err
 }
 func (s *AppService) RulesRemove(id string) error {
-	return s.store.RemoveRule(context.Background(), id)
+	if err := s.store.RemoveRule(context.Background(), id); err != nil {
+		return err
+	}
+	s.applyRuleHotkeys()
+	return nil
 }
-func (s *AppService) RulesClear() error { return s.store.ClearRules(context.Background()) }
-func (s *AppService) RulesClone(id string) (Rule, error) {
+func (s *AppService) RulesClear() error {
+	if err := s.store.ClearRules(context.Background()); err != nil {
+		return err
+	}
+	s.applyRuleHotkeys()
+	return nil
+}
+
+// RulesSetPinned implements the control centre 置顶 row action.
+func (s *AppService) RulesSetPinned(id string, pinned bool) (Rule, error) {
 	rules, err := s.store.ListRules(context.Background())
 	if err != nil {
 		return Rule{}, err
 	}
 	for _, rule := range rules {
-		if rule.ID == id {
-			rule.ID, rule.Name, rule.Enabled = randomID(), rule.Name+" - 副本", false
-			return s.store.SaveRule(context.Background(), rule)
+		if rule.ID != id {
+			continue
 		}
+		rule.Pinned = pinned
+		return s.store.SaveRule(context.Background(), rule)
 	}
 	return Rule{}, errors.New("规则不存在")
+}
+
+// RulesClone copies a rule `count` times; the copies start disabled so a clone
+// never fires before it is reviewed.
+func (s *AppService) RulesClone(id string, count int) ([]Rule, error) {
+	count = min(max(count, 1), 50)
+	rules, err := s.store.ListRules(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	for _, rule := range rules {
+		if rule.ID != id {
+			continue
+		}
+		clones := make([]Rule, 0, count)
+		for index := 0; index < count; index++ {
+			clone := rule
+			clone.ID, clone.Enabled, clone.Pinned, clone.Hotkey = randomID(), false, false, ""
+			suffix := " - 副本"
+			if count > 1 {
+				suffix = fmt.Sprintf(" - 副本%d", index+1)
+			}
+			clone.Name = rule.Name + suffix
+			saved, err := s.store.SaveRule(context.Background(), clone)
+			if err != nil {
+				return clones, err
+			}
+			clones = append(clones, saved)
+		}
+		return clones, nil
+	}
+	return nil, errors.New("规则不存在")
+}
+
+// RulesTrigger executes a rule's action list right away, without waiting for a
+// matching event. It backs the per-rule hotkey and the 调试 action.
+func (s *AppService) RulesTrigger(id string) OperationResult {
+	rules, err := s.store.ListRules(context.Background())
+	if err != nil {
+		return OperationResult{Message: err.Error()}
+	}
+	for _, rule := range rules {
+		if rule.ID != id {
+			continue
+		}
+		if !s.rulesEngineEnabled() {
+			return OperationResult{Message: "规则引擎已停止（" + rulesToggleKeyLabel + " 可恢复）"}
+		}
+		if sleep := s.settingSnapshot().DebugSleepMS; sleep > 0 {
+			if !waitForContext(context.Background(), time.Duration(sleep)*time.Millisecond) {
+				return OperationResult{Message: "调试延时等待已取消"}
+			}
+		}
+		var queueLock *sync.Mutex
+		if rule.Concurrency == "queue" && !rule.Nowait {
+			queueLock = s.ruleMutex(rule.ID)
+			queueLock.Lock()
+		}
+		outcome := s.executeRuleActions(context.Background(), rule, debugEventForRule(rule))
+		if queueLock != nil {
+			queueLock.Unlock()
+		}
+		if outcome.Result == "failed" {
+			return OperationResult{Message: outcome.Reason}
+		}
+		s.log("info", "rule", fmt.Sprintf("[rule:%s] 手动触发", rule.Name), "")
+		return OperationResult{OK: true, Message: "已执行「" + rule.Name + "」"}
+	}
+	return OperationResult{Message: "规则不存在"}
 }
 
 func (s *AppService) DanmakuQuery(filter DanmakuFilter) ([]DanmakuRecord, error) {
@@ -263,10 +605,10 @@ func (s *AppService) ConnConnect(platform Platform, roomID string) (ConnectorSta
 	if !s.authorized("") {
 		return ConnectorStatus{}, errors.New("请先验证卡密")
 	}
-	if platform != PlatformSimulator {
-		return ConnectorStatus{}, errors.New("该平台连接器尚未实现，当前仅支持本地模拟器")
+	roomID = normalizeRoomInput(roomID)
+	if roomID == "" {
+		return ConnectorStatus{}, errors.New("无法识别直播间号：请填写直播间号、分享链接（v.douyin.com/xxxx）或直播间链接")
 	}
-	roomID = strings.TrimSpace(roomID)
 	s.settingsMu.Lock()
 	s.settings.Platform, s.settings.RoomID = platform, roomID
 	s.settingsMu.Unlock()
@@ -274,20 +616,26 @@ func (s *AppService) ConnConnect(platform Platform, roomID string) (ConnectorSta
 		return ConnectorStatus{}, err
 	}
 	s.mu.Lock()
-	s.connection.Platform, s.connection.RoomID, s.connection.State, s.connection.Mode = string(platform), roomID, "connected", "simulator"
+	s.connection.Platform, s.connection.RoomID = string(platform), roomID
+	s.connection.State, s.connection.Mode = connectorStateConnecting, connectorMode(platform)
 	s.connection.Reconnects, s.connection.Dropped, s.connection.LastEventAt = 0, 0, 0
+	s.connection.LastError = ""
 	status := s.connection
 	s.mu.Unlock()
 	s.emit("conn:status", status)
-	s.log("info", "connector", "已连接本地模拟事件源", string(platform)+" room="+roomID)
+	s.log("info", "connector", "正在连接直播间", platformLabel(platform)+" "+roomID)
+	s.startConnector(platform, roomID)
 	return status, nil
 }
+
 func (s *AppService) ConnDisconnect() ConnectorStatus {
+	s.stopConnector()
 	s.mu.Lock()
-	s.connection.State = "disconnected"
+	s.connection.State, s.connection.LastError = connectorStateDisconnected, ""
 	status := s.connection
 	s.mu.Unlock()
 	s.emit("conn:status", status)
+	s.log("info", "connector", "已断开直播间连接", "")
 	return status
 }
 func (s *AppService) ConnStatus() ConnectorStatus {

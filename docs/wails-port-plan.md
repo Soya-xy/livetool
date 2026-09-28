@@ -1,4 +1,4 @@
-# 阿比整蛊复刻版 · Electron → Wails 迁移方案
+# AKA直播复刻版 · Electron → Wails 迁移方案
 
 > 依据：当前仓库已实现的 Electron 版（`livetool/`）+ 《1比1复刻实现总设计文档-Wails版.md》
 
@@ -7,7 +7,7 @@
 - 桌面端已切换为 Wails v3 + Go 服务，Vue 3 前端改用生成的 Wails 绑定；Electron 主进程、预加载层、Electron Vite 配置和 npm 根依赖不再作为运行入口。
 - SQLite、规则/动作执行、18 个功能配置、模拟器事件、弹幕记录、OBS WebSocket、配置导入导出、日志和诊断已移入 Go/Wails 服务。直播平台连接保持原版本地模拟器；未实现的平台现在明确拒绝连接，不再误报为已连接。本轮确认原 Electron 连接器本身未实现；Windows amd64 键鼠操作接入真实 `SendInput`，串口操作接入真实端口，查图沿用原版未执行响应。本地开发授权只在非 production 构建中开放。
 - 事件输入通过 1000 条上限的 FIFO 队列，由 4 个消费者并发处理；同类重复事件在 3 秒内去重，队列满时优先保留礼物，排队超过 30 秒则丢弃并累计到 `ConnectorStatus.dropped`。
-- 用户数据目录沿用 Electron `productName`（`阿比整蛊复刻版`），继续使用 `%APPDATA%/阿比整蛊复刻版/data/app.db`，不另开 Wails 专用数据库目录。
+- 用户数据目录沿用 Electron `productName`（`AKA直播复刻版`），继续使用 `%APPDATA%/AKA直播复刻版/data/app.db`，不另开 Wails 专用数据库目录。
 - 卡密校验和签名更新 API 独立放在 `backend/`；桌面前端没有管理员页面，只提供卡密校验、安全码和本机解绑。
 - Wails 更新器已使用嵌入公钥验证发布清单和产物；授权后检查，安装和重启前会询问用户。后端通过 `UPDATE_MANIFEST_FILE` 与 `UPDATE_ARTIFACT_DIR` 提供清单和二进制。
 - 生产构建会把旧设置或导入配置中的 `devMode` 强制归零，且规则调试快捷键增加 production build tag 门禁，避免开发配置遗留后绕开授权入口触发动作。
@@ -237,7 +237,7 @@ CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY, level TEXT NOT NULL, ca
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 ```
 
-- 数据目录：`%APPDATA%/阿比整蛊复刻版/data/app.db`，同级还有 `logs/`、`configs/`；现有 `app.db` 是标准 SQLite 文件，**可直接沿用**
+- 数据目录：`%APPDATA%/AKA直播复刻版/data/app.db`，同级还有 `logs/`、`configs/`；现有 `app.db` 是标准 SQLite 文件，**可直接沿用**
 - 设置项 `AppSettings` 仍以 JSON 存在 `settings` 表，`overlaySlot.backgroundTransparent` 等字段沿用
 
 ### 3.5 规则引擎：`rule-engine.ts` → `internal/rules`
@@ -312,7 +312,7 @@ export const api: ElectronApi = {
 
 - `wails build -platform windows/amd64` → 单 exe（无 Chromium 分发，体积远小于 Electron）
 - 资源目录沿用：`resources/`（素材）、`水果机/`、`videos/`、`voices/`、`images/`
-- 安装器：`wails3 task windows:package` 生成 Windows amd64 exe 与 NSIS 用户级安装包；安装器按需设置 WebView2 Evergreen Runtime，卸载保留 `%APPDATA%/阿比整蛊复刻版` 用户数据
+- 安装器：`wails3 task windows:package` 生成 Windows amd64 exe 与 NSIS 用户级安装包；安装器按需设置 WebView2 Evergreen Runtime，卸载保留 `%APPDATA%/AKA直播复刻版` 用户数据
 - 绿幕和组件 Overlay 窗标题保留「禁止最小化」提示，且禁用系统最小化/最大化按钮，方便 OBS 按标题选择窗口
 
 ---

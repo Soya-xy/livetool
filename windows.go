@@ -316,37 +316,49 @@ func (s *AppService) overlayWidget(payload OverlayWidgetPayload) error {
 		payload.Values = map[string]any{}
 	}
 	payload.Values = cloneAnyMap(payload.Values)
-	for _, key := range []string{"imagePath", "audioPath", "lockMediaPath"} {
-		if value, ok := payload.Values[key].(string); ok && value != "" {
-			if key == "lockMediaPath" && !supportedLockMediaExtension(filepath.Ext(value)) {
+	// 锁屏背景、锁链音效、垃圾桶与倒计时背景图都是可选素材：缺失时直接忽略，不影响组件本身。
+	for _, key := range []string{"imagePath", "audioPath", "lockMediaPath", "lockOpenSound", "lockHitSound", "binPath", "bgImage"} {
+		value, ok := payload.Values[key].(string)
+		if !ok || value == "" {
+			continue
+		}
+		optional := key == "lockMediaPath" || key == "lockOpenSound" || key == "lockHitSound" || key == "binPath" || key == "bgImage"
+		if key == "lockMediaPath" && !supportedLockMediaExtension(filepath.Ext(value)) {
+			delete(payload.Values, key)
+			continue
+		}
+		resolved, err := s.resolveAssetPath(value)
+		if err != nil {
+			if optional {
 				delete(payload.Values, key)
 				continue
 			}
-			resolved, err := s.resolveAssetPath(value)
-			if err != nil {
-				if key == "lockMediaPath" {
-					delete(payload.Values, key)
-					continue
-				}
-				return err
-			}
-			if info, err := os.Stat(resolved); err != nil || !info.Mode().IsRegular() {
-				if key == "lockMediaPath" {
-					delete(payload.Values, key)
-					continue
-				}
-				kind := "图片"
-				if key == "audioPath" {
-					kind = "音频"
-				}
-				return fmt.Errorf("找不到%s素材：%s", kind, filepath.Base(value))
-			}
-			mediaPath, err := s.mediaURL(resolved)
-			if err != nil {
-				return err
-			}
-			payload.Values[key] = mediaPath
+			return err
 		}
+		if info, err := os.Stat(resolved); err != nil || !info.Mode().IsRegular() {
+			if optional {
+				delete(payload.Values, key)
+				continue
+			}
+			kind := "图片"
+			if key == "audioPath" {
+				kind = "音频"
+			}
+			return fmt.Errorf("找不到%s素材：%s", kind, filepath.Base(value))
+		}
+		mediaPath, err := s.mediaURL(resolved)
+		if err != nil {
+			return err
+		}
+		payload.Values[key] = mediaPath
+	}
+	// 锁链在屏时安装全局空格键观察器，并把结果告诉前端：
+	// 前端据此决定要不要自己处理窗口内的空格，避免一次按键扣两次次数。
+	if payload.FeatureID == FeatureScreenLock && payload.Kind == "lock" {
+		if payload.Data == nil {
+			payload.Data = map[string]any{}
+		}
+		payload.Data["globalKey"] = s.syncScreenLockKeyObserver(payload.Data["locked"] == true && payload.Data["preview"] != true)
 	}
 	s.mu.Lock()
 	if payload.Kind != "speech" {
@@ -372,6 +384,41 @@ func (s *AppService) OverlayRemoveWidget(id FeatureID) {
 	s.overlayRemoveWidget(id)
 }
 
+// syncScreenLockKeyObserver 按锁链是否在屏安装 / 卸载全局空格键观察器，
+// 返回观察器是否生效（false 时前端退回组件窗内的按键处理）。
+//
+// 观察器只统计空格、不独占键盘：其它窗口照常收到空格，这也是它不用
+// GlobalShortcut（RegisterHotKey 会吞键）的原因。
+func (s *AppService) syncScreenLockKeyObserver(active bool) bool {
+	s.screenLockKeyMu.Lock()
+	defer s.screenLockKeyMu.Unlock()
+	if !active {
+		if s.screenLockKeyOn {
+			stopScreenLockKeyObserver()
+			s.screenLockKeyOn = false
+			s.log("info", "hotkey", "锁链已停止监听全局空格键", "")
+		}
+		return false
+	}
+	if s.screenLockKeyOn {
+		return true
+	}
+	if !startScreenLockKeyObserver(s.handleScreenLockKeyPress) {
+		s.log("warn", "hotkey", "锁链全局空格键监听未生效", "仅组件窗口获得焦点时可按空格解锁")
+		return false
+	}
+	s.screenLockKeyOn = true
+	s.log("info", "hotkey", "锁链已监听全局空格键", "只统计空格、不独占，其它窗口照常收到空格")
+	return true
+}
+
+// handleScreenLockKeyPress 是全局空格键回调：减少一次解锁次数，锁链结束时停止监听。
+func (s *AppService) handleScreenLockKeyPress() {
+	if remaining := s.OverlayDecrementScreenLock(); remaining <= 0 {
+		s.syncScreenLockKeyObserver(false)
+	}
+}
+
 // OverlayDecrementScreenLock serializes key presses with incoming gift updates
 // and replays the updated count if the component window is reopened.
 func (s *AppService) OverlayDecrementScreenLock() int {
@@ -393,12 +440,19 @@ func (s *AppService) OverlayDecrementScreenLock() int {
 		s.slotWidgets[FeatureScreenLock] = cloneWidget(payload)
 	}
 	s.mu.Unlock()
+	if remaining == 0 {
+		// 解锁完成：把空格键交还给系统。
+		s.syncScreenLockKeyObserver(false)
+	}
 	s.emitOverlayMessage("slot", "component-widget", payload)
 	return remaining
 }
 
 func (s *AppService) overlayRemoveWidget(id FeatureID) {
 	s.forgetOverlayWidget(id)
+	if id == FeatureScreenLock {
+		s.syncScreenLockKeyObserver(false)
+	}
 	s.emitOverlayMessage("slot", "component-remove", map[string]any{"featureId": id})
 }
 
@@ -406,6 +460,54 @@ func (s *AppService) forgetOverlayWidget(id FeatureID) {
 	s.mu.Lock()
 	delete(s.slotWidgets, id)
 	s.mu.Unlock()
+}
+
+// OverlaySaveWidgetLayout 保存组件窗里一个组件的位置与大小，重开组件窗或重启后仍然生效。
+func (s *AppService) OverlaySaveWidgetLayout(featureID string, layout WidgetLayout) OperationResult {
+	id := FeatureID(strings.TrimSpace(featureID))
+	if id == "" {
+		return OperationResult{Message: "组件标识为空"}
+	}
+	if !containsFeatureID(id) {
+		return OperationResult{Message: "未知组件：" + featureID}
+	}
+	layout.X = min(max(layout.X, -2000), 20000)
+	layout.Y = min(max(layout.Y, -2000), 20000)
+	layout.W = min(max(layout.W, 120), 4000)
+	layout.H = min(max(layout.H, 90), 4000)
+	s.settingsMu.Lock()
+	if s.settings.WidgetLayouts == nil {
+		s.settings.WidgetLayouts = map[string]WidgetLayout{}
+	}
+	s.settings.WidgetLayouts[string(id)] = layout
+	s.settingsMu.Unlock()
+	if err := s.persistSettings(); err != nil {
+		return OperationResult{Message: err.Error()}
+	}
+	return OperationResult{OK: true, Message: "布局已保存"}
+}
+
+// OverlayWidgetLayouts 返回全部已保存的组件布局，组件窗启动时读取。
+func (s *AppService) OverlayWidgetLayouts() map[string]WidgetLayout {
+	settings := s.settingSnapshot()
+	if settings.WidgetLayouts == nil {
+		return map[string]WidgetLayout{}
+	}
+	return settings.WidgetLayouts
+}
+
+func containsFeatureID(id FeatureID) bool {
+	for _, item := range featureIDs() {
+		if item == id {
+			return true
+		}
+	}
+	for _, item := range []FeatureID{FeatureCountdown, FeatureTrashDrop} {
+		if item == id {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *AppService) AudioPlay(payload map[string]any) error {
@@ -485,9 +587,9 @@ func (s *AppService) ensureOverlay(kind string) (*application.WebviewWindow, err
 	s.overlayReadySet[kind] = false
 	s.mu.Unlock()
 	settings := s.overlaySettings(kind)
-	name, title, route := "overlay-green", "阿比整蛊 - 绿幕窗口 【禁止最小化】（按Tab键可以管理视频列表）", "/#/overlay-green"
+	name, title, route := "overlay-green", "AKA直播 - 绿幕窗口 【禁止最小化】（按Tab键可以管理视频列表）", "/#/overlay-green"
 	if kind == "slot" {
-		name, title, route = "overlay-slot", "阿比整蛊 - 组件窗口 【禁止最小化】 快捷键切换透明度 Ctrl + F1", "/#/overlay-slot"
+		name, title, route = "overlay-slot", "AKA直播 - 组件窗口 【禁止最小化】 快捷键切换透明度 Ctrl + F1", "/#/overlay-slot"
 	}
 	backgroundType := application.BackgroundTypeSolid
 	var backgroundColour application.RGBA
@@ -590,11 +692,34 @@ func (s *AppService) ensureAudio() *application.WebviewWindow {
 	return window
 }
 
+// resetOverlayWindows 把绿幕窗口与组件窗口在设置里置为「关闭」。
+// 进程退出后窗口本身不会保留，但 visible 会被持久化，所以启动时统一清一次。
+func (s *AppService) resetOverlayWindows() {
+	s.settingsMu.Lock()
+	changed := false
+	for _, kind := range []string{"green", "slot"} {
+		settings := s.overlaySettingsLocked(kind)
+		if settings.Visible {
+			settings.Visible = false
+			s.setOverlaySettingsLocked(kind, settings)
+			changed = true
+		}
+	}
+	s.settingsMu.Unlock()
+	if !changed {
+		return
+	}
+	if err := s.persistSettings(); err != nil {
+		s.log("warn", "overlay", "启动时重置绿幕/组件窗口状态失败", err.Error())
+	}
+}
+
 func (s *AppService) overlayWindow(kind string) *application.WebviewWindow {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.overlayWindowLocked(kind)
 }
+
 func (s *AppService) overlayWindowLocked(kind string) *application.WebviewWindow {
 	if kind == "green" {
 		return s.greenWindow
@@ -614,7 +739,7 @@ func (s *AppService) overlayStatus(kind string) OverlayWindowStatus {
 		width, height = window.Size()
 		visible, fullscreen = window.IsVisible(), window.IsFullscreen()
 	}
-	role, title := "ylm", "阿比直播工具 · 绿幕窗口"
+	role, title := "ylm", "AKA直播 · 绿幕窗口"
 	s.mu.Lock()
 	mode := s.overlayModes[kind]
 	s.mu.Unlock()
@@ -623,9 +748,9 @@ func (s *AppService) overlayStatus(kind string) OverlayWindowStatus {
 	}
 	transparent := false
 	if kind == "slot" {
-		role, title, transparent = "yapp", "阿比直播工具 · 组件窗口", settings.BackgroundTransparent
+		role, title, transparent = "yapp", "AKA直播 · 组件窗口", settings.BackgroundTransparent
 	}
-	return OverlayWindowStatus{Type: kind, Role: role, Title: title, Visible: visible, Width: width, Height: height, Mode: mode, Fullscreen: fullscreen, Opacity: settings.Opacity, BackgroundTransparent: transparent}
+	return OverlayWindowStatus{Type: kind, Role: role, Title: title, Visible: visible, Width: width, Height: height, Mode: mode, Fullscreen: fullscreen, Opacity: settings.Opacity, BackgroundTransparent: transparent, ShowPerf: settings.ShowPerf}
 }
 func (s *AppService) emitOverlayStatus(kind string) { s.emit("overlay:status", s.overlayStatus(kind)) }
 func (s *AppService) emitOverlayMessage(target, kind string, payload any) {

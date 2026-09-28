@@ -1,6 +1,6 @@
 Unicode true
 
-!define INFO_COPYRIGHT "© 2026 阿比直播工具"
+!define INFO_COPYRIGHT "© 2026 AKA直播"
 !define WAILS_INSTALL_SCOPE "user"
 !define REQUEST_EXECUTION_LEVEL "user"
 !include "wails_tools.nsh"
@@ -20,7 +20,7 @@ ManifestDPIAware true
 !define MUI_ICON "..\icon.ico"
 !define MUI_UNICON "..\icon.ico"
 !define MUI_FINISHPAGE_RUN "$INSTDIR\${PRODUCT_EXECUTABLE}"
-!define MUI_FINISHPAGE_RUN_TEXT "启动阿比直播工具"
+!define MUI_FINISHPAGE_RUN_TEXT "启动AKA直播"
 !define MUI_FINISHPAGE_NOAUTOCLOSE
 !define MUI_ABORTWARNING
 

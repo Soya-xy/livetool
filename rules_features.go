@@ -98,23 +98,6 @@ func (s *AppService) FeatureShow(id FeatureID) OperationResult {
 	return OperationResult{OK: true, Message: "功能已启用，等待对应事件触发"}
 }
 
-func (s *AppService) FeatureIncrement(id FeatureID, key string, amount int) (int, error) {
-	if err := s.requireEntitlement("slot"); err != nil {
-		return 0, err
-	}
-	if id != FeatureWoodfish || key != "currentMerit" {
-		return 0, errors.New("不允许更新此功能状态")
-	}
-	config := s.settingForFeature(id)
-	current := featureValue(config, key, 0)
-	value := max(0, current+max(0, amount))
-	config.Values[key] = value
-	if err := s.saveFeatureConfig(id, config); err != nil {
-		return 0, err
-	}
-	return value, nil
-}
-
 func (s *AppService) InputRun(action Action) OperationResult {
 	return s.inputRun(context.Background(), action)
 }
@@ -129,17 +112,26 @@ func (s *AppService) inputRun(ctx context.Context, action Action) OperationResul
 	if len(action.Steps) == 0 {
 		return OperationResult{Message: "请先配置键鼠步骤"}
 	}
-	if err := runSystemInput(ctx, action); err != nil {
+	if err := runSystemInput(ctx, action, s.inputOptions()); err != nil {
 		s.log("warn", "input-helper", "键鼠动作执行失败", err.Error())
 		return OperationResult{Message: err.Error()}
 	}
 	s.log("info", "input-helper", action.Kind+" action sent", "steps="+fmt.Sprint(len(action.Steps)))
 	return OperationResult{OK: true, Message: "键鼠动作已发送"}
 }
+
+// inputOptions reads the 通用设置 mouse movement steps.
+func (s *AppService) inputOptions() inputOptions {
+	settings := s.settingSnapshot()
+	return inputOptions{MoveVerticalStep: settings.MoveTopBottomStep, MoveHorizontalStep: settings.MoveLeftRightStep}
+}
 func (s *AppService) InputFindImage(image string, threshold float64) ImageSearchResult {
 	return ImageSearchResult{OK: false, Message: fmt.Sprintf("未执行系统查图：%s threshold=%.2f", filepath.Base(image), threshold)}
 }
 func (s *AppService) OBSConnect(address, password string) OperationResult {
+	if err := s.requireOBSEnabled(); err != nil {
+		return OperationResult{Message: err.Error()}
+	}
 	if err := s.requireEntitlement("overlay"); err != nil {
 		return OperationResult{Message: err.Error()}
 	}
@@ -162,6 +154,9 @@ func (s *AppService) OBSConnect(address, password string) OperationResult {
 	return OperationResult{OK: true, Message: status.Message}
 }
 func (s *AppService) OBSCommand(command string, args map[string]string) OperationResult {
+	if err := s.requireOBSEnabled(); err != nil {
+		return OperationResult{Message: err.Error()}
+	}
 	if err := s.requireEntitlement("overlay"); err != nil {
 		return OperationResult{Message: err.Error()}
 	}
@@ -172,6 +167,9 @@ func (s *AppService) OBSCommand(command string, args map[string]string) Operatio
 	return OperationResult{OK: true, Message: s.obs.Status().Message}
 }
 func (s *AppService) OBSStartVirtualCamera() OperationResult {
+	if err := s.requireOBSEnabled(); err != nil {
+		return OperationResult{Message: err.Error()}
+	}
 	if err := s.requireEntitlement("overlay"); err != nil {
 		return OperationResult{Message: err.Error()}
 	}
@@ -185,13 +183,31 @@ func (s *AppService) OBSStartVirtualCamera() OperationResult {
 	return operationFrom(status.Message, err)
 }
 func (s *AppService) OBSStopVirtualCamera() OperationResult {
+	if err := s.requireOBSEnabled(); err != nil {
+		return OperationResult{Message: err.Error()}
+	}
 	if err := s.requireEntitlement("overlay"); err != nil {
 		return OperationResult{Message: err.Error()}
 	}
 	status, err := s.obs.StopVirtualCamera()
 	return operationFrom(status.Message, err)
 }
-func (s *AppService) OBSStatus() OBSConnectionStatus { return s.obs.Status() }
+func (s *AppService) OBSStatus() OBSConnectionStatus {
+	status := s.obs.Status()
+	if s.settingSnapshot().IsDisableOBS {
+		status.Connected = false
+		status.Message = "OBS 连接已在通用设置中禁用"
+	}
+	return status
+}
+
+// requireOBSEnabled implements 禁用OBS连接 from 通用设置.
+func (s *AppService) requireOBSEnabled() error {
+	if s.settingSnapshot().IsDisableOBS {
+		return errors.New("OBS 连接已在通用设置中禁用")
+	}
+	return nil
+}
 
 func (s *AppService) processEvent(ctx context.Context, event LiveEvent) {
 	record := recordFromEvent(event, s.settingSnapshot().StoreRaw)
@@ -203,16 +219,22 @@ func (s *AppService) processEvent(ctx context.Context, event LiveEvent) {
 	record.ID = id
 	s.emit("danmaku:append", record)
 	s.log("info", event.Source, fmt.Sprintf("%s user=%s text=%s", event.Kind, userName(event), eventText(event)), "")
-	rules, err := s.store.ListRules(context.Background())
-	if err != nil {
-		s.log("error", "rules", "读取规则失败", err.Error())
-		return
-	}
-	outcome := s.runRules(ctx, event, rules)
-	if ctx.Err() == nil {
-		s.runFeatureRules(event)
-	} else if outcome.Result == "none" {
-		outcome = RuleOutcome{Result: "failed", Reason: "应用关闭时事件处理已取消"}
+	outcome := RuleOutcome{Result: "none"}
+	if !s.rulesEngineEnabled() {
+		// 开启/停止 is off: the event is still recorded, but nothing runs.
+		outcome.Reason = "规则引擎已停止（" + rulesToggleKeyLabel + " 可恢复）"
+	} else {
+		rules, err := s.store.ListRules(context.Background())
+		if err != nil {
+			s.log("error", "rules", "读取规则失败", err.Error())
+			return
+		}
+		outcome = s.runRules(ctx, event, rules)
+		if ctx.Err() == nil {
+			s.runFeatureRules(event)
+		} else if outcome.Result == "none" {
+			outcome = RuleOutcome{Result: "failed", Reason: "应用关闭时事件处理已取消"}
+		}
 	}
 	if err := s.store.UpdateRecordResult(context.Background(), id, outcome); err != nil {
 		s.log("error", "danmaku", "更新弹幕处理结果失败", err.Error())
@@ -230,6 +252,9 @@ func (s *AppService) runRules(ctx context.Context, event LiveEvent, rules []Rule
 		}
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].Pinned != candidates[j].Pinned {
+			return candidates[i].Pinned
+		}
 		if candidates[i].Priority == candidates[j].Priority {
 			return candidates[i].UpdatedAt < candidates[j].UpdatedAt
 		}
@@ -240,11 +265,12 @@ func (s *AppService) runRules(ctx context.Context, event LiveEvent, rules []Rule
 			return RuleOutcome{Result: "failed", Reason: "应用关闭时事件处理已取消"}
 		}
 		var queueLock *sync.Mutex
-		if rule.Concurrency == "queue" {
+		// 立即执行 skips the per-rule queue so the actions start at once.
+		if rule.Concurrency == "queue" && !rule.Nowait {
 			queueLock = s.ruleMutex(rule.ID)
 			queueLock.Lock()
 		}
-		if reason := s.startRule(rule); reason != "" {
+		if reason := s.startRule(rule, event); reason != "" {
 			if queueLock != nil {
 				queueLock.Unlock()
 			}
@@ -252,29 +278,7 @@ func (s *AppService) runRules(ctx context.Context, event LiveEvent, rules []Rule
 			continue
 		}
 		s.log("info", "rule", fmt.Sprintf("[rule:%s] matched priority=%d", rule.Name, rule.Priority), "")
-		outcome := RuleOutcome{RuleID: rule.ID, RuleName: rule.Name, Result: "ok"}
-		for _, action := range rule.Actions {
-			repeats := max(1, action.Repeat)
-			for i := 0; i < repeats; i++ {
-				if !waitForContext(ctx, time.Duration(action.DelayMS)*time.Millisecond) {
-					outcome.Result, outcome.Reason = "failed", "应用关闭时事件处理已取消"
-					break
-				}
-				result := s.executeAction(ctx, action, event, rule)
-				if !result.OK {
-					outcome.Result, outcome.Reason = "failed", result.Message
-					s.log("warn", "rule", fmt.Sprintf("[rule:%s] action failed", rule.Name), result.Message)
-					break
-				}
-				if ctx.Err() != nil {
-					outcome.Result, outcome.Reason = "failed", "应用关闭时事件处理已取消"
-					break
-				}
-			}
-			if outcome.Result == "failed" {
-				break
-			}
-		}
+		outcome := s.executeRuleActions(ctx, rule, event)
 		s.finishRule(rule.ID)
 		if queueLock != nil {
 			queueLock.Unlock()
@@ -287,12 +291,52 @@ func (s *AppService) runRules(ctx context.Context, event LiveEvent, rules []Rule
 	return RuleOutcome{Result: "none"}
 }
 
-func (s *AppService) startRule(rule Rule) string {
+// executeRuleActions runs the action list of a matched rule. 重复执行次数 repeats
+// the whole list; 操作顺序执行 serialises action lists across rules.
+func (s *AppService) executeRuleActions(ctx context.Context, rule Rule, event LiveEvent) RuleOutcome {
+	outcome := RuleOutcome{RuleID: rule.ID, RuleName: rule.Name, Result: "ok"}
+	// 等待时长：排队执行时先等一会儿再跑动作（立即执行的玩法不等待）。
+	if rule.WaitMS > 0 && !waitForContext(ctx, time.Duration(rule.WaitMS)*time.Millisecond) {
+		outcome.Result, outcome.Reason = "failed", "应用关闭时事件处理已取消"
+		return outcome
+	}
+	if s.settingSnapshot().IsOrder {
+		s.orderMu.Lock()
+		defer s.orderMu.Unlock()
+	}
+	for round := 0; round < max(1, rule.RepeatCount); round++ {
+		for _, action := range rule.Actions {
+			repeats := max(1, action.Repeat)
+			for i := 0; i < repeats; i++ {
+				if !waitForContext(ctx, time.Duration(action.DelayMS)*time.Millisecond) {
+					outcome.Result, outcome.Reason = "failed", "应用关闭时事件处理已取消"
+					return outcome
+				}
+				result := s.executeAction(ctx, action, event, rule)
+				if !result.OK {
+					outcome.Result, outcome.Reason = "failed", result.Message
+					s.log("warn", "rule", fmt.Sprintf("[rule:%s] action failed", rule.Name), result.Message)
+					return outcome
+				}
+				if ctx.Err() != nil {
+					outcome.Result, outcome.Reason = "failed", "应用关闭时事件处理已取消"
+					return outcome
+				}
+			}
+		}
+	}
+	return outcome
+}
+
+func (s *AppService) startRule(rule Rule, event LiveEvent) string {
 	s.ruleStateMu.Lock()
 	defer s.ruleStateMu.Unlock()
 	now := nowMillis()
 	if now < s.ruleNextAllowed[rule.ID] {
 		return fmt.Sprintf("冷却中，还需 %dms", s.ruleNextAllowed[rule.ID]-now)
+	}
+	if reason := ruleTriggerLimitReason(rule, event, s.ruleTriggerLast, now); reason != "" {
+		return reason
 	}
 	if rule.Probability != nil && rand.Float64() > *rule.Probability {
 		return "概率未命中"
@@ -303,8 +347,64 @@ func (s *AppService) startRule(rule Rule) string {
 	if rule.CooldownMS > 0 {
 		s.ruleNextAllowed[rule.ID] = now + int64(rule.CooldownMS)
 	}
+	if seconds := triggerLimitSeconds(rule.TriggerLimits, event.Kind); seconds > 0 {
+		s.ruleTriggerLast[ruleTriggerLimitKey(rule.ID, event)] = now
+		if len(s.ruleTriggerLast) > 512 {
+			pruneRuleTriggerLimits(s.ruleTriggerLast, now)
+		}
+	}
 	s.ruleActive[rule.ID]++
 	return ""
+}
+
+// triggerLimitSeconds maps an event kind onto the 「触发限制」 seconds field.
+func triggerLimitSeconds(limits *RuleTriggerLimits, kind EventKind) int {
+	if limits == nil {
+		return 0
+	}
+	switch kind {
+	case KindGift:
+		return limits.GiftSecond
+	case KindChat:
+		return limits.TextSecond
+	case KindLike:
+		return limits.LikeSecond
+	case KindEnter:
+		return limits.EnterSecond
+	}
+	return 0
+}
+
+func ruleTriggerLimitReason(rule Rule, event LiveEvent, last map[string]int64, now int64) string {
+	seconds := triggerLimitSeconds(rule.TriggerLimits, event.Kind)
+	if seconds <= 0 {
+		return ""
+	}
+	previous, exists := last[ruleTriggerLimitKey(rule.ID, event)]
+	if exists && now-previous < int64(seconds)*1000 {
+		return fmt.Sprintf("触发限制：同一用户 %d 秒内只触发一次", seconds)
+	}
+	return ""
+}
+
+func ruleTriggerLimitKey(ruleID string, event LiveEvent) string {
+	user := ""
+	if event.User != nil {
+		user = event.User.ID
+		if user == "" {
+			user = event.User.Name
+		}
+	}
+	return strings.Join([]string{ruleID, string(event.Kind), user}, "|")
+}
+
+// pruneRuleTriggerLimits drops entries that are far outside any usable window.
+func pruneRuleTriggerLimits(last map[string]int64, now int64) {
+	for key, timestamp := range last {
+		if now-timestamp > 10*60*1000 {
+			delete(last, key)
+		}
+	}
 }
 
 func (s *AppService) finishRule(id string) {
@@ -459,8 +559,6 @@ func (s *AppService) executeAction(ctx context.Context, action Action, event Liv
 		return operationFrom("", s.OverlayPlayVideo(OverlayVideoPayload{Path: action.Path, Lane: action.Lane, DurationMS: action.DurationMS, Loop: action.Loop, Chroma: action.Chroma}))
 	case "drop":
 		return operationFrom("", s.OverlayDrop(map[string]any{"image": action.Image, "count": action.Count, "gravity": action.Gravity, "bounce": action.Bounce, "durationMs": action.DurationMS, "maxVisible": action.MaxVisible}))
-	case "slot":
-		return operationFrom("", s.OverlaySlot(map[string]any{"theme": action.Theme, "pool": action.Pool, "weights": action.Weights}))
 	case "audio":
 		return operationFrom("", s.AudioPlay(map[string]any{"path": action.Path, "volume": action.Volume, "interrupt": action.Interrupt, "loop": action.Loop}))
 	case "key", "mouse":
@@ -469,9 +567,155 @@ func (s *AppService) executeAction(ctx context.Context, action Action, event Liv
 		return s.SerialPulse(action)
 	case "obs":
 		return s.OBSCommand(action.Command, action.Args)
+
+	// ── 新版动作菜单补齐的类型 ──
+	case "sleep": // 等待
+		return s.actionSleep(ctx, action)
+	case "showimage": // 砸图片
+		return operationFrom("", s.OverlayDrop(map[string]any{"image": action.Image, "count": action.Count, "size": action.Size, "x": action.X, "y": action.Y, "durationMs": action.DurationMS}))
+	case "randombox": // 随机盲盒
+		return operationFrom("", s.OverlaySlot(map[string]any{"pool": action.Pool, "weights": action.Weights, "durationMs": action.DurationMS}))
+	case "app": // 手机玩法
+		if strings.TrimSpace(action.Path) == "" {
+			return OperationResult{Message: "手机玩法未选择视频素材"}
+		}
+		return operationFrom("", s.OverlayPlayVideo(OverlayVideoPayload{Path: action.Path, DurationMS: action.DurationMS, Loop: action.Loop}))
+	case "gospeed": // 加速度
+		speed := action.Speed
+		if speed <= 0 {
+			speed = 1
+		}
+		target := action.TargetCount
+		if target <= 0 {
+			target = 10
+		}
+		return operationFrom("", s.OverlayWidget(OverlayWidgetPayload{
+			FeatureID: FeatureSpeedCurve, Kind: "acceleration", Title: "加速度",
+			Values: map[string]any{"targetCount": target, "speed": speed, "durationMs": action.DurationMS},
+			Data:   map[string]any{"targetCount": target, "speed": speed},
+		}))
+	case "obs_filter": // OBS场景滤镜
+		return s.obsFilterAction(action)
+	case "rule": // 内置事件
+		return s.runBuiltinEvent(action)
+	case "tielian": // 屏幕锁链
+		return s.executeFeatureAction(FeatureScreenLock, actionOverrides(
+			"pressesPerGift", action.Delta,
+			"effect", action.Effect,
+			"countMin", action.CountMin,
+			"countMax", action.CountMax,
+		), event)
+	case "trash": // 垃圾掉落
+		return s.executeFeatureAction(FeatureTrashDrop, actionOverrides(
+			"count", action.Count,
+			"imagePath", action.Image,
+			"binPath", action.TrashBin,
+		), event)
 	default:
 		return OperationResult{Message: "不支持的动作类型：" + action.Kind}
 	}
+}
+
+// actionSleep 实现「等待」动作：阻塞指定时长，可被 ctx 取消。
+func (s *AppService) actionSleep(ctx context.Context, action Action) OperationResult {
+	delay := action.DurationMS
+	if delay <= 0 {
+		delay = 1000
+	}
+	if delay > 600000 {
+		delay = 600000
+	}
+	timer := time.NewTimer(time.Duration(delay) * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return OperationResult{OK: true, Message: fmt.Sprintf("已等待 %d ms", delay)}
+	case <-ctx.Done():
+		return OperationResult{Message: "等待已取消"}
+	}
+}
+
+// obsFilterAction 实现「OBS场景滤镜」：切换滤镜显隐，可选到点自动隐藏。
+func (s *AppService) obsFilterAction(action Action) OperationResult {
+	name := strings.TrimSpace(action.FilterName)
+	if name == "" {
+		return OperationResult{Message: "OBS场景滤镜未选择滤镜"}
+	}
+	enabled := action.Visible
+	result := s.OBSCommand("SetSourceFilterEnabled", map[string]string{"filterName": name, "filterEnabled": fmt.Sprintf("%t", enabled)})
+	if !result.OK || !action.AutoHide {
+		return result
+	}
+	delay := action.DurationMS
+	if delay <= 0 {
+		delay = 3000
+	}
+	go func() {
+		time.Sleep(time.Duration(delay) * time.Millisecond)
+		s.OBSCommand("SetSourceFilterEnabled", map[string]string{"filterName": name, "filterEnabled": "false"})
+	}()
+	return result
+}
+
+// builtinEventAction 处理「内置事件」。原版 handlerRule 走内置事件表，
+// 事件 ID 与行为见 builtin_events.go 与 builtin_events_windows.go。
+func (s *AppService) builtinEventAction(action Action) OperationResult {
+	return s.runBuiltinEvent(action)
+}
+
+// executeFeatureAction 把动作参数转成对应扩展功能的一次触发。
+// 功能未启用时返回明确原因，而不是静默忽略。
+func (s *AppService) executeFeatureAction(id FeatureID, overrides map[string]any, event LiveEvent) OperationResult {
+	config := s.settingForFeature(id)
+	if !config.Enabled {
+		return OperationResult{Message: "对应功能未启用：" + string(id) + "（请先在扩展功能页开启）"}
+	}
+	if err := s.executeFeature(id, config, event, "触发", overrides); err != nil {
+		return OperationResult{Message: err.Error()}
+	}
+	return OperationResult{OK: true, Message: "已触发 " + string(id)}
+}
+
+// actionOverrides 按 key/value 交替收集动作参数，跳过零值与空串，
+// 避免未填写的动作字段覆盖扩展功能自身的默认值。
+func actionOverrides(pairs ...any) map[string]any {
+	values := map[string]any{}
+	for i := 0; i+1 < len(pairs); i += 2 {
+		key, ok := pairs[i].(string)
+		if !ok || key == "" {
+			continue
+		}
+		switch value := pairs[i+1].(type) {
+		case int:
+			if value != 0 {
+				values[key] = value
+			}
+		case float64:
+			if value != 0 {
+				values[key] = value
+			}
+		case string:
+			if strings.TrimSpace(value) != "" {
+				values[key] = value
+			}
+		case bool:
+			values[key] = value
+		}
+	}
+	return values
+}
+
+// assetExists 判断素材路径在素材根目录内是否存在且是普通文件。
+func (s *AppService) assetExists(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	resolved, err := s.resolveAssetPath(path)
+	if err != nil {
+		return false
+	}
+	info, err := os.Stat(resolved)
+	return err == nil && info.Mode().IsRegular()
 }
 
 func recordFromEvent(event LiveEvent, includeRaw bool) DanmakuRecord {
@@ -589,91 +833,59 @@ func (s *AppService) executeFeature(id FeatureID, config FeatureConfig, event Li
 			action = "subtract"
 		}
 		return widget(OverlayWidgetPayload{FeatureID: id, Kind: "timer", Title: featureValue(active, "displayContent", "直播倒计时"), Values: active.Values, Data: map[string]any{"action": action, "seconds": value("durationSeconds", 60), "deltaSeconds": numeric(value("secondsPerGift", 10)) * giftCount}})
-	case FeatureWoodfish:
-		count := featureValue(config, "currentMerit", 0)
-		if event.Kind == KindGift {
-			count += numeric(value("meritPerGift", featureValue(active, "meritPerClick", 1))) * giftCount
-			persist("currentMerit", count)
-			if err := save(); err != nil {
-				return err
-			}
-		}
-		return widget(OverlayWidgetPayload{FeatureID: id, Kind: "woodfish", Title: "电子木鱼", Values: active.Values, Data: map[string]any{"count": count}})
-	case FeatureSlotMachine:
-		pool := splitFeatureList(featureValue(active, "pool", "一等奖, 二等奖, 谢谢参与"))
-		weights := parseWeights(featureValue(active, "weights", "1, 10, 89"), len(pool))
-		images := make([]string, 14)
-		for i := range images {
-			images[i] = fmt.Sprintf("水果机/%d.png", i+1)
-		}
-		payload := map[string]any{"theme": value("theme", "default"), "pool": pool, "weights": weights, "images": images, "durationMs": value("durationMs", 2200)}
-		if featureValue(active, "playMusic", true) {
-			payload["audioPath"] = "fruit.mp3"
-		}
-		return s.OverlaySlot(payload)
 	case FeatureGiftScreen:
 		path, _ := value("imagePath", "images/平底锅.png").(string)
 		if err := s.OverlayDrop(map[string]any{"image": path, "count": giftCount, "durationMs": value("durationMs", 3500), "gravity": 500, "bounce": 0.2, "maxVisible": value("maxVisible", 20)}); err != nil {
 			return err
 		}
 		return widget(OverlayWidgetPayload{FeatureID: id, Kind: "notice", Title: "礼物飘屏", Values: active.Values, Data: map[string]any{"text": fmt.Sprintf("%s × %d · 已发送到绿幕窗口", giftName(event), giftCount)}})
-	case FeatureLottery:
-		return widget(OverlayWidgetPayload{FeatureID: id, Kind: "wheel", Title: "大转盘", Values: active.Values})
-	case FeatureCounter:
-		current := featureValue(config, "currentValue", featureValue(active, "initialValue", 0))
-		delta := numeric(value("step", 1)) * giftCount
-		if ruleAction == "减少" {
-			delta = -delta
-		}
-		current = max(0, current+delta)
-		persist("currentValue", current)
-		if err := save(); err != nil {
-			return err
-		}
-		return widget(OverlayWidgetPayload{FeatureID: id, Kind: "counter", Title: featureValue(active, "displayContent", "礼物计数"), Values: active.Values, Data: map[string]any{"value": current}})
 	case FeatureGiftPool:
-		pool := splitFeatureList(featureValue(active, "pool", "啤酒, 小心心, 平底锅"))
-		if len(pool) == 0 {
-			return errors.New("礼物贴纸池为空")
-		}
-		index := rand.Intn(len(pool))
-		if !featureValue(active, "randomize", true) {
-			index = featureValue(config, "nextStickerIndex", 0) % len(pool)
-			persist("nextStickerIndex", (index+1)%len(pool))
-			if err := save(); err != nil {
-				return err
-			}
-		}
-		sticker := pool[index]
-		data := map[string]any{"sticker": sticker, "durationMs": value("durationMs", 3500)}
-		if isImagePath(sticker) {
-			data["sticker"] = filepath.Base(sticker)
-			path, err := s.resolveAssetPath(sticker)
-			if err != nil {
-				return err
-			}
-			if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() {
-				return fmt.Errorf("找不到礼物贴纸图片：%s", filepath.Base(sticker))
-			}
-			mediaPath, err := s.mediaURL(path)
-			if err != nil {
-				return err
-			}
-			data["imagePath"] = mediaPath
-		}
-		return widget(OverlayWidgetPayload{FeatureID: id, Kind: "sticker", Title: "礼物咖", Values: active.Values, Data: data})
+		// 礼物菜单：菜单本身由「测试」或规则显示在组件窗，点击菜单项时由前端回调
+		// FeatureMenuGift 发一条礼物事件，因此这里不再消费礼物。
+		return widget(OverlayWidgetPayload{FeatureID: id, Kind: "menu", Title: "礼物菜单", Values: active.Values})
 	case FeatureScreenLock:
 		pressesPerGift := min(9999, max(1, numeric(value("pressesPerGift", 1))))
 		delta := pressesPerGift * giftCount
+		sender := giftName(event)
 		return s.applyScreenLockGift(OverlayWidgetPayload{
 			FeatureID: id,
 			Kind:      "lock",
 			Title:     "屏幕锁键",
 			Values:    active.Values,
-			Data:      map[string]any{"locked": true, "giftName": giftName(event)},
+			Data:      map[string]any{"locked": true, "giftName": sender, "message": fmt.Sprintf("%s 增加了 %d", sender, delta)},
 		}, ruleAction, delta)
-	case FeatureMosquitoSlap:
-		return widget(OverlayWidgetPayload{FeatureID: id, Kind: "mosquito", Title: "拍蚊子", Values: active.Values, Data: map[string]any{"durationMs": value("durationMs", 20000), "score": 0}})
+	case FeatureCountdown:
+		action := "start"
+		switch {
+		case event.Kind == KindGift && ruleAction == "减少":
+			action = "subtract"
+		case event.Kind == KindGift:
+			action = "add"
+		}
+		return widget(OverlayWidgetPayload{FeatureID: id, Kind: "countdown", Title: "倒计时", Values: active.Values, Data: map[string]any{
+			"action":       action,
+			"seconds":      value("durationSeconds", 60),
+			"deltaSeconds": giftCount,
+		}})
+	case FeatureTrashDrop:
+		count := min(100, max(1, numeric(value("count", 1)))*giftCount)
+		maxVisible := min(200, max(1, numeric(value("maxVisible", 60))))
+		// 垃圾与垃圾桶素材都是可选的：缺失时组件窗会画一个纯 CSS 垃圾桶。
+		values := active.Values
+		imagePath, _ := value("imagePath", "").(string)
+		if !s.assetExists(imagePath) {
+			delete(values, "imagePath")
+		} else if err := s.OverlayDrop(map[string]any{"image": imagePath, "count": count, "gravity": 1500, "bounce": 0.25, "durationMs": value("durationMs", 4000), "maxVisible": maxVisible}); err != nil {
+			return err
+		}
+		binPath, _ := value("binPath", "").(string)
+		if !s.assetExists(binPath) {
+			delete(values, "binPath")
+		}
+		return widget(OverlayWidgetPayload{FeatureID: id, Kind: "trash", Title: "垃圾掉落", Values: values, Data: map[string]any{
+			"action": "add",
+			"amount": count,
+		}})
 	default:
 		return fmt.Errorf("不支持的扩展功能：%s", id)
 	}
@@ -703,40 +915,26 @@ func (s *AppService) showFeaturePreview(id FeatureID, config FeatureConfig) (boo
 		payload = OverlayWidgetPayload{FeatureID: id, Kind: "reply", Title: "弹幕助手", Values: values, Data: map[string]any{"preview": true, "text": featureValue(config, "replyTemplate", "收到 {user}")}}
 	case FeatureLiveClock:
 		payload = OverlayWidgetPayload{FeatureID: id, Kind: "timer", Title: featureValue(config, "displayContent", "直播倒计时"), Values: values, Data: map[string]any{"preview": true, "seconds": featureValue(config, "durationSeconds", 60)}}
-	case FeatureWoodfish:
-		payload = OverlayWidgetPayload{FeatureID: id, Kind: "woodfish", Title: "电子木鱼", Values: values, Data: map[string]any{"preview": true, "count": featureValue(config, "currentMerit", 0)}}
-	case FeatureLottery:
-		payload = OverlayWidgetPayload{FeatureID: id, Kind: "wheel", Title: "大转盘", Values: values, Data: map[string]any{"preview": true}}
-	case FeatureCounter:
-		payload = OverlayWidgetPayload{FeatureID: id, Kind: "counter", Title: featureValue(config, "displayContent", "礼物计数"), Values: values, Data: map[string]any{"preview": true, "value": featureValue(config, "currentValue", featureValue(config, "initialValue", 0))}}
 	case FeatureGiftScreen:
 		payload = OverlayWidgetPayload{FeatureID: id, Kind: "notice", Title: "礼物飘屏", Values: values, Data: map[string]any{"preview": true, "text": "组件已启用 · 礼物素材将在绿幕窗口飘屏"}}
 	case FeatureGiftPool:
-		pool := splitFeatureList(featureValue(config, "pool", "啤酒, 小心心, 平底锅"))
-		sticker := "等待礼物"
-		if len(pool) > 0 {
-			sticker = pool[0]
-		}
-		data := map[string]any{"preview": true, "sticker": sticker}
-		if isImagePath(sticker) {
-			path, err := s.resolveAssetPath(sticker)
-			if err != nil {
-				return false, err
-			}
-			if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() {
-				return false, fmt.Errorf("找不到礼物贴纸图片：%s", filepath.Base(sticker))
-			}
-			mediaPath, err := s.mediaURL(path)
-			if err != nil {
-				return false, err
-			}
-			data["sticker"], data["imagePath"] = filepath.Base(sticker), mediaPath
-		}
-		payload = OverlayWidgetPayload{FeatureID: id, Kind: "sticker", Title: "礼物咖", Values: values, Data: data}
+		payload = OverlayWidgetPayload{FeatureID: id, Kind: "menu", Title: "礼物菜单", Values: values, Data: map[string]any{"preview": true}}
 	case FeatureScreenLock:
-		payload = OverlayWidgetPayload{FeatureID: id, Kind: "lock", Title: "屏幕锁键", Values: values, Data: map[string]any{"preview": true, "locked": false, "remainingPresses": 3}}
-	case FeatureMosquitoSlap:
-		payload = OverlayWidgetPayload{FeatureID: id, Kind: "mosquito", Title: "拍蚊子", Values: values, Data: map[string]any{"preview": true, "durationMs": featureValue(config, "durationMs", 20000), "score": 0}}
+		// 锁链特效只在真正锁定时渲染，玩法预览不显示任何内容。
+		return false, nil
+	case FeatureCountdown:
+		payload = OverlayWidgetPayload{FeatureID: id, Kind: "countdown", Title: "倒计时", Values: values, Data: map[string]any{"preview": true, "seconds": featureValue(config, "durationSeconds", 60)}}
+	case FeatureTrashDrop:
+		previewValues := cloneAnyMap(values)
+		imagePath, _ := previewValues["imagePath"].(string)
+		if !s.assetExists(imagePath) {
+			delete(previewValues, "imagePath")
+		}
+		binPath, _ := previewValues["binPath"].(string)
+		if !s.assetExists(binPath) {
+			delete(previewValues, "binPath")
+		}
+		payload = OverlayWidgetPayload{FeatureID: id, Kind: "trash", Title: "垃圾掉落", Values: previewValues, Data: map[string]any{"preview": true}}
 	default:
 		return false, nil
 	}
@@ -781,6 +979,57 @@ func (s *AppService) hasEventWidget(id FeatureID) bool {
 	return ok && widget.Data["preview"] != true
 }
 
+// FeatureMenuGift 由组件窗的礼物菜单调用：把「点了一下菜单里的礼物」变成一条礼物事件，
+// 后续走与真实礼物完全相同的规则链路。
+func (s *AppService) FeatureMenuGift(giftName string) OperationResult {
+	name := strings.TrimSpace(giftName)
+	if name == "" {
+		return OperationResult{Message: "礼物菜单项没有填写礼物名称"}
+	}
+	if !s.authorized("") {
+		return OperationResult{Message: "请先验证卡密"}
+	}
+	status := s.ConnStatus()
+	source := status.Platform
+	if source == "" {
+		source = string(PlatformSimulator)
+	}
+	s.enqueueEvent(LiveEvent{
+		ID:        randomID(),
+		Source:    source,
+		RoomID:    status.RoomID,
+		Kind:      KindGift,
+		User:      &LiveUser{Name: "礼物菜单"},
+		Gift:      &LiveGift{Name: name, Count: 1},
+		Text:      name,
+		Timestamp: nowMillis(),
+		Raw:       map[string]any{"from": "gift-menu"},
+	})
+	s.log("info", "feature", "礼物菜单触发", name)
+	return OperationResult{OK: true, Message: "已触发 " + name}
+}
+
+// FeatureGiftIcon 返回礼物名称对应的图标地址（来自平台礼物表），找不到时返回空串。
+func (s *AppService) FeatureGiftIcon(name string) string {
+	s.giftIconMu.Lock()
+	defer s.giftIconMu.Unlock()
+	return s.giftIcons[strings.TrimSpace(name)]
+}
+
+// setGiftIcons 由平台连接器在拉到礼物表后调用，供礼物菜单显示礼物图片。
+func (s *AppService) setGiftIcons(icons map[string]string) {
+	s.giftIconMu.Lock()
+	defer s.giftIconMu.Unlock()
+	if s.giftIcons == nil {
+		s.giftIcons = map[string]string{}
+	}
+	for name, icon := range icons {
+		if name != "" && icon != "" {
+			s.giftIcons[name] = icon
+		}
+	}
+}
+
 func (s *AppService) requireEntitlement(entitlement string) error {
 	if !s.authorized(entitlement) {
 		return fmt.Errorf("当前卡密未包含 %s 权限，或授权会话已过期", entitlement)
@@ -797,6 +1046,18 @@ func (s *AppService) debugRuleByIndex(index int) {
 		return
 	}
 	rule := rules[index]
+	if sleep := s.settingSnapshot().DebugSleepMS; sleep > 0 {
+		if !waitForContext(context.Background(), time.Duration(sleep)*time.Millisecond) {
+			return
+		}
+	}
+	s.enqueueEvent(debugEventForRule(rule))
+	s.log("info", "hotkey", "已发送规则调试事件", rule.Name)
+}
+
+// debugEventForRule builds the synthetic event used by the debug hotkeys and by
+// RulesTrigger, mirroring what the control centre debug button sends.
+func debugEventForRule(rule Rule) LiveEvent {
 	kind := KindGift
 	if len(rule.Trigger.Kinds) > 0 {
 		kind = rule.Trigger.Kinds[0]
@@ -815,8 +1076,7 @@ func (s *AppService) debugRuleByIndex(index int) {
 	} else {
 		event.Text = "调试弹幕"
 	}
-	s.enqueueEvent(event)
-	s.log("info", "hotkey", "已发送规则调试事件", rule.Name)
+	return event
 }
 
 func operationFrom(message string, err error) OperationResult {
@@ -878,6 +1138,22 @@ func numeric(value any) int {
 		return int(number)
 	case float32:
 		return int(number)
+	default:
+		return 0
+	}
+}
+
+// numericFloat 与 numeric 相同，但保留小数：玩法倍率这类字段需要 0.1 的精度。
+func numericFloat(value any) float64 {
+	switch number := value.(type) {
+	case int:
+		return float64(number)
+	case int64:
+		return float64(number)
+	case float64:
+		return number
+	case float32:
+		return float64(number)
 	default:
 		return 0
 	}

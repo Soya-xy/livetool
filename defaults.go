@@ -32,8 +32,17 @@ func defaultAppSettings(version, assetsRoot string) AppSettings {
 		OverlaySlot:  OverlaySettings{Visible: false, AlwaysOnTop: false, Opacity: 1, BackgroundTransparent: true, Width: 960, Height: 540, LaneCount: 1, Background: "#000000"},
 		Platform:     PlatformSimulator, RoomID: "demo-room", AuthServerURL: configuredLicenseServerURL(),
 		OBSURL: "ws://127.0.0.1:4455", AutoStart: false, Features: defaultFeatureSettings(),
+		MoveTopBottomStep: defaultMoveTopBottomStep, MoveLeftRightStep: defaultMoveLeftRightStep,
 	}
 }
+
+// Mouse movement steps copied from the original app's 通用设置 defaults.
+const (
+	defaultMoveTopBottomStep = 35
+	defaultMoveLeftRightStep = 80
+	maxMoveStep              = 2000
+	maxDebugSleepMS          = 60000
+)
 
 func defaultFeatureSettings() FeatureSettings {
 	settings := FeatureSettings{}
@@ -57,15 +66,25 @@ func defaultFeatureSettings() FeatureSettings {
 	add(FeatureFryingPan, map[string]any{"displayContent": "煮播血条", "maxValue": 100, "damagePerGift": 10, "barColor": "#ff4f56", "currentValue": 100}, true)
 	add(FeatureVoiceBroadcast, map[string]any{"audioPath": "voices/测试音效.mp3", "template": "{user} 送出 {gift}，数量 {count}", "chatTemplate": "{user} 说 {text}", "chatEnabled": true, "volume": 0.8, "interrupt": false}, true)
 	add(FeatureDanmakuAssistant, map[string]any{"keywords": "666, 欧皇", "keywordMode": "contains", "replyTemplate": "收到 {user}", "cooldownMs": 3000}, false)
-	add(FeatureLiveClock, map[string]any{"displayContent": "直播倒计时", "durationSeconds": 60, "secondsPerGift": 10, "style": "digital"}, true)
-	add(FeatureWoodfish, map[string]any{"audioPath": "fruit.mp3", "meritPerClick": 1, "meritPerGift": 1, "showCounter": true, "currentMerit": 0}, true)
-	add(FeatureSlotMachine, map[string]any{"theme": "default", "pool": "一等奖, 二等奖, 谢谢参与", "weights": "1, 10, 89", "durationMs": 2200, "playMusic": true, "nextStickerIndex": 0}, true)
+	add(FeatureLiveClock, map[string]any{"displayContent": "直播倒计时", "durationSeconds": 60, "secondsPerGift": 10, "style": "digital", "topText": "", "idleText": "", "skin": "默认"}, true)
 	add(FeatureGiftScreen, map[string]any{"imagePath": "images/平底锅.png", "durationMs": 3500, "maxVisible": 20}, true)
-	add(FeatureLottery, map[string]any{"pool": "一等奖, 二等奖, 谢谢参与", "weights": "1, 10, 89", "durationMs": 1700}, true)
-	add(FeatureCounter, map[string]any{"displayContent": "礼物计数", "initialValue": 0, "step": 1, "currentValue": 0}, true)
-	add(FeatureGiftPool, map[string]any{"pool": "啤酒, 小心心, 平底锅", "durationMs": 3500, "randomize": true, "nextStickerIndex": 0}, true)
-	add(FeatureScreenLock, map[string]any{"displayContent": "请按空格解锁", "lockColor": "#e53935", "pressesPerGift": 1, "lockMediaPath": ""}, true)
-	add(FeatureMosquitoSlap, map[string]any{"imagePath": "idle.png", "durationMs": 20000, "score": 1}, true)
+	add(FeatureGiftPool, map[string]any{"menus": []any{
+		map[string]any{
+			"id": "menu-1", "enabled": true, "showLeftTitle": true, "title": "礼物菜单1",
+			"opacity": 1, "fontSize": 18, "fontColor": "#e0503f", "imageSize": 32,
+			"gifts": []any{
+				map[string]any{"id": "gift-1", "title": "啤酒", "giftName": "啤酒"},
+			},
+		},
+	}}, false)
+	add(FeatureScreenLock, map[string]any{"displayContent": "请按空格解锁", "lockColor": "#e53935", "pressesPerGift": 1, "lockMediaPath": "", "lockSoundVolume": 0.8, "lockOpenSound": "", "lockHitSound": "", "lockBlurMax": 0}, true)
+	// ── 新版新增的扩展功能 ──
+	add(FeatureCountdown, map[string]any{
+		"bgColor1": "#1a1a2e", "bgColor2": "#16213e", "openColor": "#00ff88", "closeColor": "#ff4650",
+		"countdownColor": "#ffffff", "bgImage": "", "durationSeconds": 60,
+		"tempEnabled": false, "tempMin": 0, "tempMax": 100,
+	}, true)
+	add(FeatureTrashDrop, map[string]any{"imagePath": "images/垃圾.png", "binPath": "", "count": 1, "maxVisible": 60, "durationMs": 4000}, true)
 	return settings
 }
 
@@ -117,6 +136,18 @@ func mergeAppSettings(input AppSettings, version, assetsRoot string) AppSettings
 	}
 	if input.OBSURL == "" {
 		input.OBSURL = defaults.OBSURL
+	}
+	if input.MoveTopBottomStep < 0 || input.MoveTopBottomStep > maxMoveStep {
+		input.MoveTopBottomStep = defaults.MoveTopBottomStep
+	}
+	if input.MoveLeftRightStep < 0 || input.MoveLeftRightStep > maxMoveStep {
+		input.MoveLeftRightStep = defaults.MoveLeftRightStep
+	}
+	if input.DebugSleepMS < 0 {
+		input.DebugSleepMS = 0
+	}
+	if input.DebugSleepMS > maxDebugSleepMS {
+		input.DebugSleepMS = maxDebugSleepMS
 	}
 	if !localDevelopmentModeAllowed() {
 		input.DevMode = false

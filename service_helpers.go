@@ -13,8 +13,8 @@ import (
 var orderedFeatures = []FeatureID{
 	FeatureGreenWindow, FeatureComponentWindow, FeatureVirtualCamera, FeatureSpeedCurve, FeatureSpeedIba,
 	FeatureImpactGift, FeatureFryingPan, FeatureVoiceBroadcast, FeatureDanmakuAssistant, FeatureLiveClock,
-	FeatureWoodfish, FeatureSlotMachine, FeatureGiftScreen, FeatureLottery, FeatureCounter, FeatureGiftPool,
-	FeatureScreenLock, FeatureMosquitoSlap,
+	FeatureGiftScreen, FeatureGiftPool,
+	FeatureScreenLock,
 }
 
 func featureIDs() []FeatureID { return orderedFeatures }

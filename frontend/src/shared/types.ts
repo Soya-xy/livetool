@@ -12,6 +12,9 @@ export type Platform =
 
 export type EventKind = 'gift' | 'chat' | 'like' | 'follow' | 'enter' | 'system'
 
+/** 素材选择器支持的素材类别。 */
+export type AssetKind = 'image' | 'video' | 'audio'
+
 export interface LiveEvent {
   id: string
   source: Platform | string
@@ -60,9 +63,27 @@ export type Action =
   | (ActionBase & { kind: 'video'; path: string; lane?: number; loop?: boolean; chroma?: ChromaConfig })
   | (ActionBase & { kind: 'audio'; path: string; volume?: number; interrupt?: boolean; loop?: boolean })
   | (ActionBase & { kind: 'drop'; image: string; count?: number; gravity?: number; bounce?: number; durationMs?: number })
-  | (ActionBase & { kind: 'slot'; theme?: string; pool?: string[]; weights?: number[] })
   | (ActionBase & { kind: 'serial'; port: string; baud: number; onBytes: number[]; offBytes: number[]; pulseMs: number })
   | (ActionBase & { kind: 'obs'; command: string; args?: Record<string, string> })
+  // ── 与原版动作菜单 1:1 对齐的类型 ──
+  /** 等待：阻塞指定时长后继续下一条动作。 */
+  | (ActionBase & { kind: 'sleep' })
+  /** 砸图片：把礼物图片砸向屏幕指定位置。 */
+  | (ActionBase & { kind: 'showimage'; image: string; count?: number; size?: number; x?: number; y?: number })
+  /** 随机盲盒：从素材池按权重抽一个。 */
+  | (ActionBase & { kind: 'randombox'; pool?: string[]; weights?: number[] })
+  /** 手机玩法：在绿幕窗口播放手机端玩法视频。 */
+  | (ActionBase & { kind: 'app'; appAction?: string; path: string; loop?: boolean })
+  /** 加速度：按到达数量把队列加速完成。 */
+  | (ActionBase & { kind: 'gospeed'; targetCount?: number; speed?: number })
+  /** OBS场景滤镜：切换滤镜显隐，可选到点自动隐藏。 */
+  | (ActionBase & { kind: 'obs_filter'; filterName: string; visible?: boolean; autoHide?: boolean })
+  /** 内置事件：触发原版的内置事件表条目（事件 ID 见 shared/builtinEvents.ts）。 */
+  | (ActionBase & { kind: 'rule'; ruleEvent: string; ruleEventTimeoutMs?: number; killProcessName?: string; runExePath?: string })
+  /** 屏幕锁链：给锁链层数加/减若干层。 */
+  | (ActionBase & { kind: 'tielian'; delta?: number; effect?: string; countMin?: number; countMax?: number })
+  /** 垃圾掉落：掉落垃圾，堆满垃圾桶。 */
+  | (ActionBase & { kind: 'trash'; count?: number; image?: string; bin?: string })
 
 export interface RuleTrigger {
   kinds: EventKind[]
@@ -72,6 +93,14 @@ export interface RuleTrigger {
   minCount?: number
   users?: string[]
   source?: string[]
+}
+
+/** 触发限制：同一用户在该秒数内只触发一次；0 表示不限制。 */
+export interface RuleTriggerLimits {
+  giftSecond?: number
+  textSecond?: number
+  likeSecond?: number
+  enterSecond?: number
 }
 
 export interface Rule {
@@ -86,6 +115,39 @@ export interface Rule {
   actions: Action[]
   createdAt?: number
   updatedAt?: number
+  /** 置顶：固定在控制中心列表最前。 */
+  pinned?: boolean
+  /** 玩法热键：形如 `Ctrl + Shift + F`。 */
+  hotkey?: string
+  /** 重复执行次数：整条动作列表重复执行的轮数，默认 1。 */
+  repeatCount?: number
+  /** 立即执行：跳过排队，匹配后立刻开始。 */
+  nowait?: boolean
+  /** 等待时长（毫秒）：排队执行时动作开始前先等这么久，立即执行时不生效。 */
+  waitMs?: number
+  triggerLimits?: RuleTriggerLimits
+  /** 播放声音：规则命中时播放配置的声音素材。 */
+  playSound?: boolean
+  /** 同时播放声音：允许多条声音叠放，而不是排队。 */
+  soundSimultaneous?: boolean
+  /** 播放间隔（毫秒）：两条声音之间的最小间隔，默认 800。 */
+  soundIntervalMs?: number
+  /** 累计动作时间：把动作耗时计入队列等待时间。 */
+  countActionTime?: boolean
+  /** 不参与加速：开启后「加速度」对本条玩法无效。 */
+  noAcceleration?: boolean
+  /** 盲盒概率：数值越大越容易抽中，默认 1。 */
+  boxWeight?: number
+}
+
+/** 控制中心底部状态：全局开启/停止、暂停/继续与固定热键。 */
+export interface RulesRuntimeState {
+  enabled: boolean
+  paused: boolean
+  /** Ctrl + Shift + 1-9 调试快捷键当前是否可用。 */
+  debugKeys: boolean
+  openKey: string
+  closeKey: string
 }
 
 export type ActionResult = 'ok' | 'skipped' | 'failed' | 'none'
@@ -124,17 +186,28 @@ export interface DanmakuFilter {
   offset?: number
 }
 
-export type ConnectorState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'error'
+/** 连接状态：取值与原版 webcastState 的 state 一致（connect/reConnect/success/error/break/timeout）。 */
+export type ConnectorState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'error' | 'break' | 'timeout'
+
+export type ConnectorMode = 'simulator' | 'websocket' | 'polling' | 'relay'
 
 export interface ConnectorStatus {
   platform: string
   roomId?: string
   state: ConnectorState
-  mode: 'simulator' | 'websocket' | 'polling' | 'relay'
+  mode: ConnectorMode
   reconnects: number
   dropped: number
   lastError?: string
   lastEventAt?: number
+}
+
+/** 组件窗里某个组件的位置与大小（拖动 / 拉伸后保存）。 */
+export interface WidgetLayout {
+  x: number
+  y: number
+  w: number
+  h: number
 }
 
 export interface OverlaySettings {
@@ -143,6 +216,8 @@ export interface OverlaySettings {
   opacity: number
   /** 组件窗口专用：true = 完全透明底板，false = 不透明深色底板。绿幕窗口不使用。 */
   backgroundTransparent: boolean
+  /** 组件窗口专用：在角落显示帧率与长帧统计，用于定位拖动 / 拉伸卡顿。 */
+  showPerf?: boolean
   width: number
   height: number
   laneCount: number
@@ -151,7 +226,7 @@ export interface OverlaySettings {
 
 export type OverlayType = 'green' | 'slot'
 
-export type OverlayWidgetKind = 'acceleration' | 'health' | 'timer' | 'woodfish' | 'counter' | 'wheel' | 'sticker' | 'lock' | 'mosquito' | 'reply' | 'notice' | 'speech'
+export type OverlayWidgetKind = 'acceleration' | 'health' | 'timer' | 'sticker' | 'lock' | 'reply' | 'notice' | 'speech' | 'countdown' | 'trash' | 'menu'
 
 export interface OverlayWidgetPayload {
   featureId: FeatureId
@@ -174,6 +249,7 @@ export interface OverlayWindowStatus {
   fullscreen: boolean
   opacity: number
   backgroundTransparent: boolean
+  showPerf?: boolean
 }
 
 export interface AppSettings {
@@ -195,6 +271,17 @@ export interface AppSettings {
   obsPassword: string
   autoStart: boolean
   features: FeatureSettings
+  /** 禁用组刷：同一用户 1.2 秒内连送同款礼物只执行 1 次操作；关闭时每条礼物消息都会执行。 */
+  isDisableGiftGroup: boolean
+  /** 操作顺序执行：同一时间只执行一条玩法的动作列表。 */
+  isOrder: boolean
+  /** 禁用OBS连接：开启后所有 OBS 调用都会被拒绝。 */
+  isDisableOBS: boolean
+  /** 调试延时（毫秒）：调试快捷键与玩法热键触发前的等待时间。 */
+  debugSleepMs: number
+  /** 鼠标移动步长：上下 / 左右；0 表示一次到位。 */
+  moveTopBottomStep: number
+  moveLeftRightStep: number
 }
 
 export type LicenseEntitlement = 'overlay' | 'slot' | 'serial'
@@ -255,7 +342,16 @@ export interface LiveToolApi {
     save: (rule: Rule) => Promise<Rule>
     remove: (id: string) => Promise<void>
     clear: () => Promise<void>
-    clone: (id: string) => Promise<Rule>
+    /** 克隆玩法；count 为克隆份数（1–50）。 */
+    clone: (id: string, count?: number) => Promise<Rule[]>
+    /** 置顶 / 取消置顶。 */
+    setPinned: (id: string, pinned: boolean) => Promise<Rule>
+    /** 立即执行该玩法的动作列表（调试与玩法热键使用）。 */
+    trigger: (id: string) => Promise<OperationResult>
+    runtimeState: () => Promise<RulesRuntimeState>
+    setEnabled: (enabled: boolean) => Promise<RulesRuntimeState>
+    setPaused: (paused: boolean) => Promise<RulesRuntimeState>
+    onState: (cb: (state: RulesRuntimeState) => void) => () => void
   }
   danmaku: {
     query: (filter: DanmakuFilter) => Promise<DanmakuRecord[]>
@@ -285,6 +381,8 @@ export interface LiveToolApi {
     widget: (payload: OverlayWidgetPayload) => Promise<void>
     removeWidget: (featureId: FeatureId) => Promise<void>
     decrementScreenLock: () => Promise<number>
+    widgetLayouts: () => Promise<Record<string, WidgetLayout>>
+    saveWidgetLayout: (featureId: string, layout: WidgetLayout) => Promise<OperationResult>
     onMessage: (cb: (message: { target: 'green' | 'slot'; type: string; payload: unknown }) => void) => () => void
     onStatus: (cb: (status: OverlayWindowStatus) => void) => () => void
   }
@@ -313,8 +411,9 @@ export interface LiveToolApi {
   features: {
     test: (featureId: FeatureId) => Promise<{ ok: boolean; message: string }>
     show: (featureId: FeatureId) => Promise<{ ok: boolean; message: string }>
-    increment: (featureId: FeatureId, key: string, amount: number) => Promise<number>
     selectLockMedia: () => Promise<string>
+    menuGift: (giftName: string) => Promise<{ ok: boolean; message: string }>
+    giftIcon: (name: string) => Promise<string>
   }
   auth: {
     status: () => Promise<LicenseAuthStatus>
@@ -331,6 +430,8 @@ export interface LiveToolApi {
   diagnostics: {
     logs: (limit?: number) => Promise<LogEntry[]>
     assets: () => Promise<string[]>
+    /** 上传素材：选择本地文件并复制进素材目录，返回相对路径；取消时返回空字符串。 */
+    importAsset: (kind: AssetKind) => Promise<string>
     settings: () => Promise<AppSettings>
     saveSettings: (settings: Partial<AppSettings>) => Promise<AppSettings>
     onLog: (cb: (log: LogEntry) => void) => () => void

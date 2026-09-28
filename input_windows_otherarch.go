@@ -7,6 +7,6 @@ import (
 	"errors"
 )
 
-func runSystemInput(context.Context, Action) error {
+func runSystemInput(context.Context, Action, inputOptions) error {
 	return errors.New("系统键鼠动作目前仅支持 Windows amd64 版本")
 }

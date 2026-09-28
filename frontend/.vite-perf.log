@@ -1,0 +1,20 @@
+
+> livetool-frontend@0.2.0 dev
+> vite --host 127.0.0.1 --port 5199
+
+
+  VITE v7.3.6  ready in 471 ms
+
+  ➜  Local:   http://127.0.0.1:5199/
+  ➜  press h + enter to show help
+18:57:38 [vite] (client) ✨ optimized dependencies changed. reloading
+18:57:58 [vite] (client) page reload perf-check.js
+18:58:04 [vite] (client) page reload perf-check.js
+18:58:24 [vite] (client) page reload perf-check.js
+18:58:49 [vite] (client) page reload perf-check.js
+18:59:16 [vite] (client) page reload perf-check.js
+18:59:37 [vite] (client) page reload perf-check.js
+19:00:00 [vite] (client) page reload perf-check.js
+19:00:28 [vite] (client) page reload perf-check.js
+19:01:47 [vite] (client) page reload perf-check.js
+19:01:47 [vite] (client) page reload perf-check.html

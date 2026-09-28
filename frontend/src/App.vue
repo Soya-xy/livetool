@@ -5,6 +5,7 @@ import { ChatDotRound, CircleCheck, Connection, Grid, MagicStick, Setting, Switc
 import { Events, Updater } from '@wailsio/runtime'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { LicenseAuthStatus, Platform } from '@shared/types'
+import { connectorActionText, connectorBusy, connectorPlatformText, connectorStateText } from '@shared/connection'
 import { useAppStore } from './stores/app'
 import { api } from './services/api'
 
@@ -101,10 +102,17 @@ async function refreshAuthStatus(loadSettings = false): Promise<void> {
 }
 function openAuth(): void { authVisible.value = true; void refreshAuthStatus(true) }
 async function connect(): Promise<void> {
+  if (connectorBusy(store.status)) return
+  if (store.status.state === 'connected') {
+    try { await store.disconnect(); ElMessage.info('已断开直播间连接') }
+    catch (error) { ElMessage.error(error instanceof Error ? error.message : '断开失败') }
+    return
+  }
+  const platform = store.settings?.platform || 'simulator'
+  const roomId = store.settings?.roomId || ''
   try {
-    const roomId = store.settings?.roomId || 'demo-room'
-    await store.connect(store.settings?.platform || 'simulator', roomId)
-    ElMessage.success('已连接本地模拟事件源')
+    await store.connect(platform, roomId)
+    if (platform === 'simulator') ElMessage.success('已连接本地模拟事件源')
   } catch (error) { ElMessage.error(error instanceof Error ? error.message : '连接失败') }
 }
 async function login(local = false): Promise<void> {
@@ -172,7 +180,7 @@ async function unbindDevice(): Promise<void> {
     <aside class="sidebar">
       <div class="brand-block">
         <div class="brand-mark" aria-hidden="true"><span>AB</span><i /></div>
-        <div><div class="brand-name">阿比整蛊</div><div class="brand-version">ver {{ store.settings?.version ?? '0.2.0' }}</div></div>
+        <div><div class="brand-name">AKA直播</div><div class="brand-version">ver {{ store.settings?.version ?? '0.2.0' }}</div></div>
       </div>
       <nav class="side-nav" aria-label="主导航">
         <RouterLink v-for="item in navItems" :key="item.path" :to="item.path" class="nav-item" :class="{ active: route.path === item.path }" :aria-current="route.path === item.path ? 'page' : undefined">
@@ -181,12 +189,12 @@ async function unbindDevice(): Promise<void> {
         </RouterLink>
       </nav>
       <div class="sidebar-spacer" />
-      <button class="connection-link" @click="connect">
-        <span class="status-dot" :class="store.status.state" /><span>{{ store.status.state === 'connected' ? '已连接模拟器' : '连接到直播间' }}</span>
+      <button class="connection-link" :disabled="connectorBusy(store.status)" @click="connect">
+        <span class="status-dot" :class="store.status.state" /><span>{{ connectorActionText(store.status) }}</span>
         <el-icon><Connection /></el-icon>
       </button>
       <button class="quit-link" @click="api.window.close"><el-icon><SwitchButton /></el-icon><span>退出程序</span></button>
-      <div class="sidebar-footnote">本地模拟事件源 · 授权后启用互动功能</div>
+      <div class="sidebar-footnote">{{ connectorStateText(store.status.state) }} · 授权后启用互动功能</div>
     </aside>
 
     <main class="workspace">
@@ -208,12 +216,12 @@ async function unbindDevice(): Promise<void> {
         <router-view v-else />
       </section>
       <footer class="status-footer">
-        <div class="status-summary" role="status" aria-live="polite"><span class="status-dot" :class="store.status.state" aria-hidden="true" /><span>{{ store.status.state === 'connected' ? `已连接 · ${store.status.platform}` : '未连接直播间' }}</span><span class="footer-separator" aria-hidden="true">·</span><span>队列 {{ store.status.dropped ? `丢弃 ${store.status.dropped}` : '正常' }}</span></div>
+        <div class="status-summary" role="status" aria-live="polite"><span class="status-dot" :class="store.status.state" aria-hidden="true" /><span>{{ store.status.state === 'connected' ? `已连接 · ${connectorPlatformText(store.status.platform)}` : connectorStateText(store.status.state) }}</span><span class="footer-separator" aria-hidden="true">·</span><span>队列 {{ store.status.dropped ? `丢弃 ${store.status.dropped}` : '正常' }}</span></div>
         <div class="footer-actions"><span class="safe-label">{{ authStatus.mode === 'local' && authStatus.loggedIn ? '本地开发模式' : authStatus.loggedIn ? '卡密有效' : '未验证' }}</span><button @click="openAuth">{{ authStatus.loggedIn ? '授权设置' : '验证卡密' }}</button></div>
       </footer>
     </main>
 
-    <el-dialog v-model="authVisible" title="卡密验证" width="380px" class="auth-dialog">
+    <el-dialog v-model="authVisible" title="卡密验证" width="min(380px, calc(100vw - 40px))" class="auth-dialog">
       <div class="auth-intro"><div class="auth-icon" aria-hidden="true"><el-icon><CircleCheck /></el-icon></div><div><b>验证设备授权</b><p>输入卡密后，本机将绑定到授权服务。</p></div></div>
       <el-alert v-if="authStatus.loggedIn" :closable="false" type="success" show-icon :title="authStatus.mode === 'local' ? '当前为本地开发模式' : `已授权至 ${authStatus.expiresAt ? new Date(authStatus.expiresAt).toLocaleString() : '有效期未知'}`" class="auth-state-alert">
         <template #default><span>功能权限：{{ authStatus.features.join('、') || '无' }}</span></template>

@@ -51,6 +51,7 @@ var (
 	procSetForegroundWindow        = inputUser32.NewProc("SetForegroundWindow")
 	procShowWindow                 = inputUser32.NewProc("ShowWindow")
 	procClientToScreen             = inputUser32.NewProc("ClientToScreen")
+	procGetCursorPos               = inputUser32.NewProc("GetCursorPos")
 	procGetSystemMetrics           = inputUser32.NewProc("GetSystemMetrics")
 	procOpenProcess                = inputKernel32.NewProc("OpenProcess")
 	procQueryFullProcessImageNameW = inputKernel32.NewProc("QueryFullProcessImageNameW")
@@ -82,7 +83,7 @@ type mouseInput64 struct {
 
 type screenPoint struct{ x, y int32 }
 
-func runSystemInput(ctx context.Context, action Action) (result error) {
+func runSystemInput(ctx context.Context, action Action, options inputOptions) (result error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -97,7 +98,7 @@ func runSystemInput(ctx context.Context, action Action) (result error) {
 		return runKeySteps(ctx, action.Steps)
 	}
 	if action.Kind == "mouse" {
-		return runMouseSteps(ctx, action.Steps, target)
+		return runMouseSteps(ctx, action.Steps, target, options)
 	}
 	return errors.New("键鼠动作类型无效")
 }
@@ -154,7 +155,7 @@ func runKeySteps(ctx context.Context, steps []map[string]any) (result error) {
 	return nil
 }
 
-func runMouseSteps(ctx context.Context, steps []map[string]any, target uintptr) (result error) {
+func runMouseSteps(ctx context.Context, steps []map[string]any, target uintptr, options inputOptions) (result error) {
 	held := map[uint32]bool{}
 	defer func() {
 		for flags := range held {
@@ -209,7 +210,7 @@ func runMouseSteps(ctx context.Context, steps []map[string]any, target uintptr) 
 					}
 					x, y = int64(point.x), int64(point.y)
 				}
-				if err := sendMouseAbsolute(int32(x), int32(y)); err != nil {
+				if err := sendMouseAbsolute(ctx, int32(x), int32(y), options); err != nil {
 					return fmt.Errorf("第 %d 步移动失败：%w", index+1, err)
 				}
 			}
@@ -260,7 +261,7 @@ func sendMouse(flags, data uint32, x, y int32) error {
 	return sendInput(item)
 }
 
-func sendMouseAbsolute(x, y int32) error {
+func sendMouseAbsolute(ctx context.Context, x, y int32, options inputOptions) error {
 	originX := int32(uint32(systemMetric(76)))
 	originY := int32(uint32(systemMetric(77)))
 	width := int32(uint32(systemMetric(78)))
@@ -268,9 +269,53 @@ func sendMouseAbsolute(x, y int32) error {
 	if width <= 1 || height <= 1 || x < originX || y < originY || x >= originX+width || y >= originY+height {
 		return errors.New("鼠标坐标超出桌面范围")
 	}
+	if err := glideMouseTo(ctx, x, y, originX, originY, width, height, options); err != nil {
+		return err
+	}
 	absX := int32(int64(x-originX) * 65535 / int64(width-1))
 	absY := int32(int64(y-originY) * 65535 / int64(height-1))
 	return sendMouse(mouseMove|mouseAbsolute|mouseVirtualDesk, 0, absX, absY)
+}
+
+// glideMouseTo walks the pointer to the target in 鼠标移动步长 sized increments so
+// games that ignore teleporting cursors still register the movement. A step of 0
+// (either axis) keeps the original single-jump behaviour.
+func glideMouseTo(ctx context.Context, x, y, originX, originY, width, height int32, options inputOptions) error {
+	horizontal, vertical := options.MoveHorizontalStep, options.MoveVerticalStep
+	if horizontal <= 0 && vertical <= 0 {
+		return nil
+	}
+	var cursor screenPoint
+	if ok, _, _ := procGetCursorPos.Call(uintptr(unsafe.Pointer(&cursor))); ok == 0 {
+		return nil
+	}
+	deltaX, deltaY := float64(x-cursor.x), float64(y-cursor.y)
+	steps := 1
+	if horizontal > 0 {
+		steps = max(steps, int(math.Ceil(math.Abs(deltaX)/float64(horizontal))))
+	}
+	if vertical > 0 {
+		steps = max(steps, int(math.Ceil(math.Abs(deltaY)/float64(vertical))))
+	}
+	if steps <= 1 {
+		return nil
+	}
+	// Keep the whole glide short: at most 240 intermediate points.
+	steps = min(steps, 240)
+	for step := 1; step < steps; step++ {
+		progress := float64(step) / float64(steps)
+		pointX := int32(float64(cursor.x) + deltaX*progress)
+		pointY := int32(float64(cursor.y) + deltaY*progress)
+		absX := int32(int64(pointX-originX) * 65535 / int64(width-1))
+		absY := int32(int64(pointY-originY) * 65535 / int64(height-1))
+		if err := sendMouse(mouseMove|mouseAbsolute|mouseVirtualDesk, 0, absX, absY); err != nil {
+			return err
+		}
+		if !waitForContext(ctx, 4*time.Millisecond) {
+			return ctx.Err()
+		}
+	}
+	return nil
 }
 
 func sendInput(item input64) error {

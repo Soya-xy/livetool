@@ -2,11 +2,13 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -94,6 +96,120 @@ func supportedLockMediaExtension(extension string) bool {
 	}
 }
 
+// assetImportFolders 决定「上传素材」把文件放进素材目录的哪个子目录。
+var assetImportFolders = map[string]string{"image": "images", "video": "videos", "audio": "voices"}
+
+var assetImportLabels = map[string]string{"image": "图片", "video": "视频", "audio": "声音"}
+
+var assetImportExtensions = map[string][]string{
+	"image": {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg"},
+	"video": {".mp4", ".webm", ".mov", ".m4v"},
+	"audio": {".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac"},
+}
+
+// ImportAsset copies a file the user picks into the assets directory and returns
+// the relative path used by rules and feature settings. An empty path means the
+// dialog was cancelled.
+func (s *AppService) ImportAsset(kind string) (string, error) {
+	folder, ok := assetImportFolders[kind]
+	if !ok {
+		return "", errors.New("不支持的素材类型")
+	}
+	extensions := assetImportExtensions[kind]
+	patterns := make([]string, 0, len(extensions))
+	for _, extension := range extensions {
+		patterns = append(patterns, "*"+extension)
+	}
+	label := assetImportLabels[kind]
+	dialog := s.app.Dialog.OpenFile()
+	dialog.SetOptions(&application.OpenFileDialogOptions{
+		Title:                "选择" + label + "素材",
+		CanChooseFiles:       true,
+		CanChooseDirectories: false,
+		Filters:              []application.FileFilter{{DisplayName: label, Pattern: strings.Join(patterns, ";")}},
+		Window:               s.mainWindow,
+	})
+	sourcePath, err := dialog.PromptForSingleSelection()
+	if err != nil || sourcePath == "" {
+		return "", err
+	}
+
+	extension := strings.ToLower(filepath.Ext(sourcePath))
+	if !containsString(extensions, extension) {
+		return "", fmt.Errorf("只支持 %s 素材：%s", label, strings.Join(extensions, "、"))
+	}
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		return "", err
+	}
+	defer source.Close()
+	info, err := source.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() || info.Size() == 0 {
+		return "", errors.New("所选文件为空或不是普通文件")
+	}
+
+	root, err := filepath.Abs(s.settingSnapshot().AssetsRoot)
+	if err != nil {
+		return "", err
+	}
+	destinationDir := filepath.Join(root, folder)
+	if err := os.MkdirAll(destinationDir, 0o700); err != nil {
+		return "", err
+	}
+	destinationPath := availableAssetPath(destinationDir, assetBaseName(sourcePath), extension)
+	destination, err := os.OpenFile(destinationPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return "", err
+	}
+	if _, err := io.Copy(destination, source); err != nil {
+		_ = destination.Close()
+		_ = os.Remove(destinationPath)
+		return "", err
+	}
+	if err := destination.Close(); err != nil {
+		_ = os.Remove(destinationPath)
+		return "", err
+	}
+	relative := filepath.ToSlash(filepath.Join(folder, filepath.Base(destinationPath)))
+	s.log("info", "assets", "已导入素材", relative)
+	return relative, nil
+}
+
+// assetBaseName keeps the original file name so the stored path stays readable.
+func assetBaseName(sourcePath string) string {
+	name := strings.TrimSuffix(filepath.Base(sourcePath), filepath.Ext(sourcePath))
+	name = strings.Map(func(char rune) rune {
+		if strings.ContainsRune(`\/:*?"<>|`, char) || char < 0x20 {
+			return '_'
+		}
+		return char
+	}, name)
+	name = strings.Trim(name, " .")
+	if name == "" {
+		name = "asset"
+	}
+	if runes := []rune(name); len(runes) > 60 {
+		name = string(runes[:60])
+	}
+	return name
+}
+
+// availableAssetPath returns name.ext, or name-2.ext / name-3.ext … when that
+// file already exists, so importing never overwrites an existing asset.
+func availableAssetPath(dir, name, extension string) string {
+	candidate := filepath.Join(dir, name+extension)
+	for index := 2; index < 100; index++ {
+		if _, err := os.Stat(candidate); os.IsNotExist(err) {
+			return candidate
+		}
+		candidate = filepath.Join(dir, fmt.Sprintf("%s-%d%s", name, index, extension))
+	}
+	return filepath.Join(dir, fmt.Sprintf("%s-%s%s", name, randomID()[:8], extension))
+}
+
 func (s *AppService) mediaURL(file string) (string, error) {
 	root, err := filepath.Abs(s.settingSnapshot().AssetsRoot)
 	if err != nil {
@@ -121,7 +237,16 @@ func (s *AppService) serveLocalAsset(response http.ResponseWriter, request *http
 	}
 
 	relative := strings.TrimPrefix(request.URL.Path, localAssetURLPrefix)
-	if relative == request.URL.Path || relative == "" || filepath.IsAbs(relative) || strings.Contains(relative, "\\") || filepath.Clean(relative) != relative {
+	if relative == request.URL.Path {
+		http.NotFound(response, request)
+		return
+	}
+	// 用 path.Clean（斜杠语义）而不是 filepath.Clean：Windows 上后者会把 "images/1.png"
+	// 规范化成 "images\1.png"，导致所有子目录素材都被误判成非法路径而 404。
+	cleaned := path.Clean(relative)
+	if cleaned == "" || cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") ||
+		cleaned != relative || strings.Contains(relative, "\\") || strings.ContainsRune(relative, 0) ||
+		filepath.IsAbs(relative) || path.IsAbs(relative) {
 		http.NotFound(response, request)
 		return
 	}
